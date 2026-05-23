@@ -94,6 +94,26 @@ pub fn get_user_prompts_for_session(
     rows
 }
 
+pub fn get_user_prompts_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<UserPromptRow>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {cols} FROM user_prompts WHERE id IN ({})",
+        placeholders,
+        cols = SELECT_COLS
+    ))?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
+    let rows = stmt.query_map(params.as_slice(), row_from)?;
+    let mut out: Vec<UserPromptRow> = rows.collect::<Result<_>>()?;
+    out.sort_by_key(|r| ids.iter().position(|id| *id == r.id).unwrap_or(usize::MAX));
+    Ok(out)
+}
+
 trait OptionalExt<T> {
     fn optional(self) -> Result<Option<T>>;
 }

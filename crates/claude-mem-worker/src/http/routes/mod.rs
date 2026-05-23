@@ -31,6 +31,9 @@ use std::collections::HashMap;
 
 use super::router::AppState;
 use crate::search::result_formatter::{ResultFormatter, SearchResults};
+use crate::search::strategies::{
+    DateRange, OrderBy, SearchType, SqliteSearchStrategy, StrategySearchOptions,
+};
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
@@ -435,27 +438,19 @@ pub async fn search(
         .or_else(|| query.get("q"))
         .cloned()
         .unwrap_or_default();
-    let project = query.get("project").map(String::as_str);
-    let limit = parse_limit(query.get("limit"), 20);
-    let rows = if q.trim().is_empty() {
-        let conn = state.conn.lock().unwrap();
-        query_observations(
-            &conn,
-            &ObservationQuery {
-                project: project.map(str::to_owned),
-                limit,
-            },
-        )
-        .map_err(ApiError::internal)?
-    } else {
-        search_observations(&state, &q, project, limit)?
-    };
+    let options = search_options_from_query(&query, &q);
+    let conn = state.conn.lock().unwrap();
+    let result = SqliteSearchStrategy::new().search(&conn, &options);
+    let rows = result.results.observations;
+    let sessions = result.results.sessions;
+    let prompts = result.results.prompts;
+    let total_results = rows.len() + sessions.len() + prompts.len();
     if query.get("format").is_some_and(|format| format == "text") {
         let text = ResultFormatter::new().format_search_results(
             &SearchResults {
                 observations: rows,
-                sessions: Vec::new(),
-                prompts: Vec::new(),
+                sessions,
+                prompts,
             },
             &q,
             false,
@@ -464,7 +459,13 @@ pub async fn search(
             json!({ "content": [{ "type": "text", "text": text }] }),
         ));
     }
-    Ok(Json(json!({ "observations": rows, "count": rows.len() })))
+    Ok(Json(json!({
+        "observations": rows,
+        "sessions": sessions,
+        "prompts": prompts,
+        "count": total_results,
+        "totalResults": total_results
+    })))
 }
 
 pub async fn timeline(
@@ -666,6 +667,74 @@ fn parse_limit(value: Option<&String>, default: i64) -> i64 {
         .filter(|value| *value > 0)
         .unwrap_or(default)
         .min(100)
+}
+
+fn search_options_from_query(query: &HashMap<String, String>, q: &str) -> StrategySearchOptions {
+    StrategySearchOptions {
+        query: (!q.trim().is_empty()).then(|| q.to_owned()),
+        search_type: query
+            .get("type")
+            .or_else(|| query.get("searchType"))
+            .map(|value| match value.as_str() {
+                "observations" | "observation" => SearchType::Observations,
+                "sessions" | "session" => SearchType::Sessions,
+                "prompts" | "prompt" => SearchType::Prompts,
+                _ => SearchType::All,
+            })
+            .unwrap_or_default(),
+        obs_type: split_csv(query.get("obs_type").or_else(|| query.get("obsType"))),
+        concepts: split_csv(query.get("concepts")),
+        files: split_csv(query.get("files")),
+        project: query.get("project").cloned(),
+        date_range: parse_date_range(query),
+        limit: Some(parse_limit(query.get("limit"), 20)),
+        offset: query
+            .get("offset")
+            .and_then(|offset| offset.parse::<i64>().ok())
+            .filter(|offset| *offset >= 0),
+        order_by: match query.get("orderBy").map(String::as_str) {
+            Some("date_asc") => OrderBy::DateAsc,
+            Some("relevance") => OrderBy::Relevance,
+            _ => OrderBy::DateDesc,
+        },
+        ..Default::default()
+    }
+}
+
+fn split_csv(value: Option<&String>) -> Vec<String> {
+    value
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_date_range(query: &HashMap<String, String>) -> Option<DateRange> {
+    let start = query
+        .get("dateStart")
+        .or_else(|| query.get("start"))
+        .and_then(|value| parse_epoch(value));
+    let end = query
+        .get("dateEnd")
+        .or_else(|| query.get("end"))
+        .and_then(|value| parse_epoch(value));
+    (start.is_some() || end.is_some()).then_some(DateRange {
+        start_epoch: start,
+        end_epoch: end,
+    })
+}
+
+fn parse_epoch(value: &str) -> Option<i64> {
+    value.parse::<i64>().ok().or_else(|| {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .ok()
+            .map(|dt| dt.unix_timestamp() * 1000)
+    })
 }
 
 fn compact_json(value: Option<&Value>) -> String {
