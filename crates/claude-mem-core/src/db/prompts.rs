@@ -63,6 +63,21 @@ pub fn get_latest_user_prompt(
     .optional()
 }
 
+/// Return the count of user prompts stored for this content session id
+/// (port of `getPromptNumberFromUserPrompts`). The TS API treats this as the
+/// *next* prompt number (count), not the highest `prompt_number` — the two
+/// differ when prompt numbers are non-contiguous.
+pub fn get_prompt_number_from_user_prompts(
+    conn: &Connection,
+    content_session_id: &str,
+) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM user_prompts WHERE content_session_id = ?1",
+        params![content_session_id],
+        |r| r.get(0),
+    )
+}
+
 pub fn get_user_prompts_for_session(
     conn: &Connection,
     content_session_id: &str,
