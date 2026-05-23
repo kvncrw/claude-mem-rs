@@ -121,6 +121,17 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     assert_eq!(search["count"], 2);
     let anchor = search["observations"][0]["id"].as_i64().unwrap();
 
+    let (status, formatted_search) = get_json(
+        app.clone(),
+        "/api/search?query=Dynatron&project=cloudy-fork&limit=10&format=text",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(formatted_search["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Dynatron power cap"));
+
     let (status, timeline) = get_json(
         app.clone(),
         &format!("/api/timeline?anchor={anchor}&project=cloudy-fork&depth_before=1&depth_after=1"),

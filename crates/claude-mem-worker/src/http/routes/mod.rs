@@ -30,6 +30,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::router::AppState;
+use crate::search::result_formatter::{ResultFormatter, SearchResults};
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
@@ -449,6 +450,20 @@ pub async fn search(
     } else {
         search_observations(&state, &q, project, limit)?
     };
+    if query.get("format").is_some_and(|format| format == "text") {
+        let text = ResultFormatter::new().format_search_results(
+            &SearchResults {
+                observations: rows,
+                sessions: Vec::new(),
+                prompts: Vec::new(),
+            },
+            &q,
+            false,
+        );
+        return Ok(Json(
+            json!({ "content": [{ "type": "text", "text": text }] }),
+        ));
+    }
     Ok(Json(json!({ "observations": rows, "count": rows.len() })))
 }
 
