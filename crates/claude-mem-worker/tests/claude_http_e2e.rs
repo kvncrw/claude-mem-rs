@@ -119,6 +119,16 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(search["count"], 2);
+    let anchor = search["observations"][0]["id"].as_i64().unwrap();
+
+    let (status, timeline) = get_json(
+        app.clone(),
+        &format!("/api/timeline?anchor={anchor}&project=cloudy-fork&depth_before=1&depth_after=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(timeline["anchor"], anchor);
+    assert_eq!(timeline["count"], 2);
 
     let semantic_body = json!({
         "q": "What should we remember about Dynatron cooler power limits in cloudy-k3s?",

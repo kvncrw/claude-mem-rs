@@ -13,7 +13,7 @@ use axum::Json;
 use claude_mem_core::context::formatters::{format_observation, FormatOptions};
 use claude_mem_core::context::observation_compiler::{query_observations, ObservationQuery};
 use claude_mem_core::db::observations::get::{
-    get_observations_by_file_path, get_observations_by_ids,
+    get_observation_by_id, get_observations_by_file_path, get_observations_by_ids,
 };
 use claude_mem_core::db::prompts::{
     get_prompt_number_from_user_prompts, save_user_prompt, PromptInput,
@@ -450,6 +450,103 @@ pub async fn search(
         search_observations(&state, &q, project, limit)?
     };
     Ok(Json(json!({ "observations": rows, "count": rows.len() })))
+}
+
+pub async fn timeline(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Value> {
+    let depth_before = parse_limit(query.get("depth_before"), 3);
+    let depth_after = parse_limit(query.get("depth_after"), 3);
+    let project = query.get("project").map(String::as_str);
+    let anchor_id = match query
+        .get("anchor")
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        Some(id) => id,
+        None => {
+            let q = query
+                .get("query")
+                .or_else(|| query.get("q"))
+                .ok_or_else(|| ApiError::bad_request("anchor or query is required"))?;
+            let rows = search_observations(&state, q, project, 1)?;
+            rows.first()
+                .map(|row| row.id)
+                .ok_or_else(|| ApiError::bad_request("query did not match an anchor observation"))?
+        }
+    };
+
+    let conn = state.conn.lock().unwrap();
+    let anchor = get_observation_by_id(&conn, anchor_id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::bad_request("anchor observation was not found"))?;
+    if let Some(project) = project {
+        if anchor.project != project {
+            return Err(ApiError::bad_request(
+                "anchor observation does not belong to requested project",
+            ));
+        }
+    }
+
+    let mut before_stmt = conn
+        .prepare(
+            "SELECT id FROM observations
+             WHERE project = ?1
+               AND (created_at_epoch < ?2 OR (created_at_epoch = ?2 AND id < ?3))
+             ORDER BY created_at_epoch DESC, id DESC
+             LIMIT ?4",
+        )
+        .map_err(ApiError::internal)?;
+    let before_ids_desc: Vec<i64> = before_stmt
+        .query_map(
+            rusqlite::params![
+                &anchor.project,
+                anchor.created_at_epoch,
+                anchor.id,
+                depth_before
+            ],
+            |row| row.get(0),
+        )
+        .map_err(ApiError::internal)?
+        .collect::<Result<_, _>>()
+        .map_err(ApiError::internal)?;
+    drop(before_stmt);
+
+    let mut after_stmt = conn
+        .prepare(
+            "SELECT id FROM observations
+             WHERE project = ?1
+               AND (created_at_epoch > ?2 OR (created_at_epoch = ?2 AND id > ?3))
+             ORDER BY created_at_epoch ASC, id ASC
+             LIMIT ?4",
+        )
+        .map_err(ApiError::internal)?;
+    let after_ids: Vec<i64> = after_stmt
+        .query_map(
+            rusqlite::params![
+                &anchor.project,
+                anchor.created_at_epoch,
+                anchor.id,
+                depth_after
+            ],
+            |row| row.get(0),
+        )
+        .map_err(ApiError::internal)?
+        .collect::<Result<_, _>>()
+        .map_err(ApiError::internal)?;
+    drop(after_stmt);
+
+    let mut ids = before_ids_desc;
+    ids.reverse();
+    ids.push(anchor.id);
+    ids.extend(after_ids);
+    let rows = get_observations_by_ids(&conn, &ids).map_err(ApiError::internal)?;
+
+    Ok(Json(json!({
+        "anchor": anchor.id,
+        "observations": rows,
+        "count": rows.len()
+    })))
 }
 
 pub async fn search_by_file(

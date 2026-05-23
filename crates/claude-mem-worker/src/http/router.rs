@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use super::routes::{
     context_inject, health, memory_save, observations_batch, readiness, search, search_by_file,
-    semantic_context, sessions_complete, sessions_init, sessions_observations, version,
+    semantic_context, sessions_complete, sessions_init, sessions_observations, timeline, version,
 };
 
 #[derive(Clone)]
@@ -58,6 +58,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/context/inject", get(context_inject))
         .route("/api/context/semantic", post(semantic_context))
         .route("/api/search", get(search))
+        .route("/api/timeline", get(timeline))
         .route("/api/search/by-file", get(search_by_file))
         .route("/api/observations/batch", post(observations_batch))
         .with_state(state)

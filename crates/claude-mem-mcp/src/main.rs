@@ -1,6 +1,6 @@
 //! claude-mem-mcp stdio entry.
 
-fn main() {
-    eprintln!("MCP server not yet implemented");
-    std::process::exit(1);
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    claude_mem_mcp::server::run_stdio().await
 }
