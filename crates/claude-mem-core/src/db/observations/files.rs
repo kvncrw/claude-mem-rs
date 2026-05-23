@@ -7,6 +7,31 @@
 
 use rusqlite::{params, Connection, Result};
 
+/// Safe JSON array parser for `files_read`/`files_modified` columns
+/// (port of `observations/files.ts:parseFileList`).
+///
+/// Handles legacy bare-path strings (unquoted `"/Users/foo/bar.go"` or
+/// Windows `"C:\\Users\\foo\\bar.ts"`) and JSON scalar strings
+/// (`'"single-file.ts"'`) by wrapping them in a single-element array,
+/// instead of returning empty.
+pub fn parse_file_list(input: Option<&str>) -> Vec<String> {
+    match input {
+        None => Vec::new(),
+        Some(s) if s.is_empty() => Vec::new(),
+        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(serde_json::Value::Array(arr)) => arr
+                .into_iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(x) => Some(x),
+                    _ => None,
+                })
+                .collect(),
+            Ok(serde_json::Value::String(x)) => vec![x],
+            _ => vec![s.to_string()],
+        },
+    }
+}
+
 /// One observation + aggregated files it touched (read and modified).
 #[derive(Debug, Clone)]
 pub struct SessionFilesResult {
