@@ -6,7 +6,8 @@
 
 use claude_mem_core::db::open_in_memory;
 use claude_mem_core::db::pending_messages::{EnqueueInput, PendingMessageStore};
-use claude_mem_core::db::sessions::{self, CreateSessionInput};
+use claude_mem_core::db::sessions;
+use claude_mem_core::types::session::CreateSessionInput;
 
 const CONTENT: &str = "test-self-heal";
 
@@ -182,6 +183,7 @@ fn self_healing_is_scoped_to_specified_session() {
             tool_response: Some(serde_json::json!({"test": "response"})),
             prompt_number: Some(1),
             created_at_epoch: now_ms(),
+            ..Default::default()
         },
     ).unwrap();
     set_processing_at(&conn, stuck_in_s1, now_ms() - 120_000);
@@ -198,6 +200,7 @@ fn self_healing_is_scoped_to_specified_session() {
             tool_response: Some(serde_json::json!({"test": "response"})),
             prompt_number: Some(1),
             created_at_epoch: now_ms(),
+            ..Default::default()
         },
     ).unwrap();
     set_processing_at(&conn, s2_msg, now_ms() - 120_000);

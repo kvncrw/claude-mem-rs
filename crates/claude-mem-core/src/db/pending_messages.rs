@@ -230,8 +230,13 @@ fn json_to_text(v: Option<&serde_json::Value>) -> Result<Option<String>, rusqlit
 }
 
 fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingMessageRow> {
-    let tool_in_raw: Option<String> = row.get(4)?;
-    let tool_resp_raw: Option<String> = row.get(5)?;
+    // SELECT columns: id(0), session_db_id(1), content_session_id(2), message_type(3),
+    // tool_name(4), tool_input(5), tool_response(6), cwd(7), last_user_message(8),
+    // last_assistant_message(9), prompt_number(10), status(11), retry_count(12),
+    // created_at_epoch(13), started_processing_at_epoch(14),
+    // completed_at_epoch(15), failed_at_epoch(16), agent_type(17), agent_id(18).
+    let tool_in_raw: Option<String> = row.get(5)?;
+    let tool_resp_raw: Option<String> = row.get(6)?;
     Ok(PendingMessageRow {
         id: row.get(0)?,
         session_db_id: row.get(1)?,
@@ -240,18 +245,18 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<PendingMessageRow> {
         tool_name: row.get(4)?,
         tool_input: tool_in_raw.and_then(|s| serde_json::from_str(&s).ok()),
         tool_response: tool_resp_raw.and_then(|s| serde_json::from_str(&s).ok()),
-        cwd: row.get(6)?,
-        last_user_message: row.get(7)?,
-        last_assistant_message: row.get(8)?,
-        prompt_number: row.get(9)?,
-        status: row.get(10)?,
-        retry_count: row.get(11)?,
-        created_at_epoch: row.get(12)?,
-        started_processing_at_epoch: row.get(13)?,
-        completed_at_epoch: row.get(14)?,
-        failed_at_epoch: row.get(15)?,
-        agent_type: row.get(16)?,
-        agent_id: row.get(17)?,
+        cwd: row.get(7)?,
+        last_user_message: row.get(8)?,
+        last_assistant_message: row.get(9)?,
+        prompt_number: row.get(10)?,
+        status: row.get(11)?,
+        retry_count: row.get(12)?,
+        created_at_epoch: row.get(13)?,
+        started_processing_at_epoch: row.get(14)?,
+        completed_at_epoch: row.get(15)?,
+        failed_at_epoch: row.get(16)?,
+        agent_type: row.get(17)?,
+        agent_id: row.get(18)?,
     })
 }
 
