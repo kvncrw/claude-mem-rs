@@ -102,6 +102,47 @@ pub fn update_memory_session_id(
     Ok(conn.changes() > 0)
 }
 
+/// Mark a session as completed (port of
+/// `SessionStore.markSessionCompleted` — fixes #1532).
+///
+/// Sets `status = 'completed'` and `completed_at`/`completed_at_epoch` to
+/// the current wall-clock (ISO-8601 / epoch ms). No-op on non-existent
+/// rows.
+pub fn mark_session_completed(conn: &Connection, id: i64) -> Result<()> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    // ISO-8601 with millisecond precision — same shape the TS side emits.
+    let secs = now_ms / 1000;
+    let ms = now_ms % 1000;
+    let completed_at = format!(
+        "{}.{}Z",
+        time::OffsetDateTime::from_unix_timestamp(secs)
+            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default()
+            .trim_end_matches("Z")
+            .trim_end_matches(|c: char| !c.is_ascii_digit()),
+        ms
+    );
+    // Simpler: use time crate's direct format.
+    let completed_at = time::OffsetDateTime::from_unix_timestamp(secs)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+
+    conn.execute(
+        "UPDATE sdk_sessions
+            SET status = 'completed',
+                completed_at = ?1,
+                completed_at_epoch = ?2
+          WHERE id = ?3",
+        params![completed_at, now_ms, id],
+    )?;
+    Ok(())
+}
+
 trait OptionalExt<T> {
     fn optional(self) -> Result<Option<T>>;
 }
