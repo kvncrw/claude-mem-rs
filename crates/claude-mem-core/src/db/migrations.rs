@@ -23,7 +23,7 @@ pub(crate) fn is_version_applied(conn: &Connection, version: i32) -> Result<bool
     Ok(count > 0)
 }
 
-/// Apply all known migrations (v4..v25) to `conn`. Idempotent: each
+/// Apply all known migrations (v4..v26) to `conn`. Idempotent: each
 /// `apply_vN` dispatcher checks `is_version_applied` first, so a second
 /// `apply_all` call on a fully-migrated schema is a no-op.
 pub fn apply_all(conn: &Connection) -> Result<()> {
@@ -44,6 +44,8 @@ pub fn apply_all(conn: &Connection) -> Result<()> {
     if !is_version_applied(conn, 23)? { apply_v23(conn)?; }
     if !is_version_applied(conn, 24)? { apply_v24(conn)?; }
     if !is_version_applied(conn, 25)? { apply_v25(conn)?; }
+    if !is_version_applied(conn, 26)? { apply_v26(conn)?; }
+    if !is_version_applied(conn, 26)? { apply_v26(conn)?; }
     Ok(())
 }
 
@@ -476,7 +478,19 @@ fn apply_v21(conn: &Connection) -> Result<()> {
         );
         INSERT INTO session_summaries_new SELECT * FROM session_summaries;
         DROP TABLE session_summaries;
-        ALTER TABLE session_summaries_new RENAME TO session_summaries;",
+        ALTER TABLE session_summaries_new RENAME TO session_summaries;
+        -- Recreate indexes that were dropped with the rebuild.
+        CREATE INDEX IF NOT EXISTS idx_observations_sdk_session ON observations(memory_session_id);
+        CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project);
+        CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(type);
+        CREATE INDEX IF NOT EXISTS idx_observations_created ON observations(created_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_observations_merged_into ON observations(merged_into_project);
+        CREATE INDEX IF NOT EXISTS idx_observations_agent_type ON observations(agent_type);
+        CREATE INDEX IF NOT EXISTS idx_observations_agent_id ON observations(agent_id);
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_sdk_session ON session_summaries(memory_session_id);
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_project ON session_summaries(project);
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_merged_into ON session_summaries(merged_into_project);",
     )?;
     tx.execute(
         "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
@@ -558,6 +572,71 @@ fn apply_v25(conn: &Connection) -> Result<()> {
     tx.commit()
 }
 
+/// v26: backfill FTS5 tables for `observations` and `session_summaries`
+/// (v10 only created `user_prompts_fts`). Mirrors the TS runner's
+/// AI/AD/AU trigger set that keeps each FTS shadow in sync with its base
+/// table. Safe on already-migrated DBs that ran v9/v17/v21 — the
+/// `CREATE VIRTUAL TABLE IF NOT EXISTS` + `CREATE TRIGGER IF NOT EXISTS`
+/// guards make this idempotent.
+fn apply_v26(conn: &Connection) -> Result<()> {
+    const V: i32 = 26;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+            title, subtitle, narrative, text, facts, concepts,
+            content='observations',
+            content_rowid='id'
+        );
+        CREATE TABLE IF NOT EXISTS session_summaries_fts_cfg (id INTEGER PRIMARY KEY);
+        CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
+            request, investigated, learned, completed, next_steps, notes,
+            content='session_summaries',
+            content_rowid='id'
+        );
+        CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
+            INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+                VALUES (new.id, new.title, new.subtitle, new.narrative, new.text,
+                        new.facts, new.concepts);
+        END;
+        CREATE TRIGGER IF NOT EXISTS observations_ad AFTER DELETE ON observations BEGIN
+            INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+                VALUES ('delete', old.id, old.title, old.subtitle, old.narrative, old.text,
+                        old.facts, old.concepts);
+        END;
+        CREATE TRIGGER IF NOT EXISTS observations_au AFTER UPDATE ON observations BEGIN
+            INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
+                VALUES ('delete', old.id, old.title, old.subtitle, old.narrative, old.text,
+                        old.facts, old.concepts);
+            INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+                VALUES (new.id, new.title, new.subtitle, new.narrative, new.text,
+                        new.facts, new.concepts);
+        END;
+        CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
+            INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+                VALUES (new.id, new.request, new.investigated, new.learned, new.completed,
+                        new.next_steps, new.notes);
+        END;
+        CREATE TRIGGER IF NOT EXISTS session_summaries_ad AFTER DELETE ON session_summaries BEGIN
+            INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+                VALUES ('delete', old.id, old.request, old.investigated, old.learned, old.completed,
+                        old.next_steps, old.notes);
+        END;
+        CREATE TRIGGER IF NOT EXISTS session_summaries_au AFTER UPDATE ON session_summaries BEGIN
+            INSERT INTO session_summaries_fts(session_summaries_fts, rowid, request, investigated, learned, completed, next_steps, notes)
+                VALUES ('delete', old.id, old.request, old.investigated, old.learned, old.completed,
+                        old.next_steps, old.notes);
+            INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+                VALUES (new.id, new.request, new.investigated, new.learned, new.completed,
+                        new.next_steps, new.notes);
+        END;",
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
+        [V],
+    )?;
+    tx.commit()
+}
+
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -614,9 +693,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // 17 migrations: v4,5,6,7,8,9,10,11,16,17,19,20,21,22,23,24,25.
+        // 18 migrations: v4,5,6,7,8,9,10,11,16,17,19,20,21,22,23,24,25,26.
         // (v1-v3 never existed; v12-v15, v18 are gaps in the TS runner.)
-        assert_eq!(applied, 17);
+        assert_eq!(applied, 18);
     }
 
     #[test]
@@ -631,7 +710,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(applied, 17);
+        assert_eq!(applied, 18);
     }
 
     #[test]
