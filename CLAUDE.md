@@ -29,9 +29,13 @@ schema mirror is in `crates/claude-mem-core/src/db/migrations.rs`.
 cargo build --workspace
 cargo test --workspace
 cargo test -p claude-mem-worker --features chroma  # ignored tests
+cargo run -p claude-mem-worker                      # HTTP worker
 cargo run -p claude-mem-mcp                         # stdio MCP server
-cargo run -p claude-mem-supervisor --bin hook       # stdin hook dispatcher
+cargo run -p claude-mem-supervisor --bin hook -- claude-code session-init
 ```
+
+The public runtime/process docs live in `README.md`. The graph/vector follow-up
+plan lives in `ROADMAP.md`.
 
 ## Development notes
 

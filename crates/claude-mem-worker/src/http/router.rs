@@ -10,8 +10,8 @@ use tokio::sync::Notify;
 
 use super::routes::{
     admin_shutdown, context_inject, health, memory_save, observations_batch, readiness, search,
-    search_by_file, semantic_context, sessions_complete, sessions_init, sessions_observations,
-    timeline, version,
+    search_by_concept, search_by_file, search_by_type, semantic_context, sessions_complete,
+    sessions_init, sessions_observations, timeline, version,
 };
 
 #[derive(Clone)]
@@ -76,6 +76,8 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/search", get(search))
         .route("/api/timeline", get(timeline))
         .route("/api/search/by-file", get(search_by_file))
+        .route("/api/search/by-concept", get(search_by_concept))
+        .route("/api/search/by-type", get(search_by_type))
         .route("/api/observations/batch", post(observations_batch))
         .with_state(state)
 }

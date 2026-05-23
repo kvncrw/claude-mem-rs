@@ -141,6 +141,37 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     assert_eq!(timeline["anchor"], anchor);
     assert_eq!(timeline["count"], 2);
 
+    let (status, by_concept) = get_json(
+        app.clone(),
+        "/api/search/by-concept?concept=tool-use&project=cloudy-fork&limit=10",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(by_concept["count"], 1);
+    assert_eq!(by_concept["observations"][0]["title"], "Read tool use");
+
+    let (status, by_type) = get_json(
+        app.clone(),
+        "/api/search/by-type?type=discovery&project=cloudy-fork&limit=10",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(by_type["count"], 2);
+    assert!(by_type["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["title"] == "Read tool use"));
+
+    let (status, by_file) = get_json(
+        app.clone(),
+        "/api/search/by-file?filePath=/repo/src/lib.rs&limit=10",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(by_file["count"], 1);
+    assert_eq!(by_file["observations"][0]["title"], "Read tool use");
+
     let semantic_body = json!({
         "q": "What should we remember about Dynatron cooler power limits in cloudy-k3s?",
         "project": "cloudy-fork",

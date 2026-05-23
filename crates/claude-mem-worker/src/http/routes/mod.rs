@@ -245,6 +245,7 @@ pub async fn sessions_observations(
         compact_json(req.tool_input.as_ref()),
         compact_json(req.tool_response.as_ref())
     );
+    let (files_read, files_modified) = tool_file_paths(tool_name, req.tool_input.as_ref());
     let observation = ObservationInput {
         r#type: "discovery".into(),
         title: Some(format!("{} tool use", tool_name)),
@@ -252,6 +253,8 @@ pub async fn sessions_observations(
         narrative: Some(strip_private_tags(&narrative).into_owned()),
         facts: Some(vec![format!("Tool: {}", tool_name)]),
         concepts: Some(vec!["claude-code".into(), "tool-use".into()]),
+        files_read,
+        files_modified,
         created_at,
         created_at_epoch,
         generated_by_model: Some("rust-local".into()),
@@ -579,6 +582,39 @@ pub async fn search_by_file(
     Ok(Json(json!({ "observations": rows, "count": rows.len() })))
 }
 
+pub async fn search_by_concept(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Value> {
+    let concept = query
+        .get("concept")
+        .or_else(|| query.get("q"))
+        .or_else(|| query.get("query"))
+        .ok_or_else(|| ApiError::bad_request("concept is required"))?;
+    let options = search_options_from_query(&query, "");
+    let conn = state.conn.lock().unwrap();
+    let rows = SqliteSearchStrategy::new()
+        .find_by_concept(&conn, concept, &options)
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({ "observations": rows, "count": rows.len() })))
+}
+
+pub async fn search_by_type(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Value> {
+    let types = split_csv(query.get("type").or_else(|| query.get("types")));
+    if types.is_empty() {
+        return Err(ApiError::bad_request("type is required"));
+    }
+    let options = search_options_from_query(&query, "");
+    let conn = state.conn.lock().unwrap();
+    let rows = SqliteSearchStrategy::new()
+        .find_by_type(&conn, &types, &options)
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({ "observations": rows, "count": rows.len() })))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ObservationsBatchRequest {
     ids: Vec<i64>,
@@ -740,4 +776,51 @@ fn compact_json(value: Option<&Value>) -> String {
     value
         .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "null".into()))
         .unwrap_or_else(|| "null".into())
+}
+
+fn tool_file_paths(
+    tool_name: &str,
+    tool_input: Option<&Value>,
+) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    let mut paths = Vec::new();
+    collect_tool_paths(tool_input, &mut paths);
+    if paths.is_empty() {
+        return (None, None);
+    }
+
+    match tool_name {
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => (None, Some(paths)),
+        _ => (Some(paths), None),
+    }
+}
+
+fn collect_tool_paths(value: Option<&Value>, paths: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    match value {
+        Value::Object(map) => {
+            for key in [
+                "file_path",
+                "filePath",
+                "path",
+                "notebook_path",
+                "notebookPath",
+            ] {
+                if let Some(path) = map.get(key).and_then(Value::as_str) {
+                    if !path.trim().is_empty() {
+                        paths.push(path.to_owned());
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_tool_paths(Some(item), paths);
+            }
+        }
+        _ => {}
+    }
+    paths.sort();
+    paths.dedup();
 }
