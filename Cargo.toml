@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/claude-mem-core",
+    "crates/claude-mem-worker",
+    "crates/claude-mem-supervisor",
+    "crates/claude-mem-sdk",
+    "crates/claude-mem-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+authors = ["Kevin Crawley"]
+repository = "https://github.com/kvncrw/claude-mem-rs"
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+
+# HTTP client (for MCP tool calls to worker)
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
+
+# SQLite (FTS5 ships automatically when `bundled` is enabled)
+rusqlite = { version = "0.31", features = [
+    "bundled",
+    "modern_sqlite",
+    "backup",
+] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Dates (RFC3339 ↔ ISO-8601 strings, epoch ms)
+time = { version = "0.3", features = [
+    "serde",
+    "parsing",
+    "formatting",
+    "macros",
+] }
+
+# IDs (replaces TS SDK-generated IDs)
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# MCP server
+rmcp = { version = "0.4", features = ["server", "transport-io"] }
+
+# Builders for test fixtures
+bon = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Temp dirs for tests
+tempfile = "3"
+
+# HTTP route testing
+tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1", features = ["full"] }
+
+# Internal crates
+claude-mem-core = { path = "crates/claude-mem-core" }
+claude-mem-worker = { path = "crates/claude-mem-worker" }
+claude-mem-supervisor = { path = "crates/claude-mem-supervisor" }
+claude-mem-sdk = { path = "crates/claude-mem-sdk" }
+claude-mem-mcp = { path = "crates/claude-mem-mcp" }
