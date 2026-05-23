@@ -6,10 +6,12 @@ use claude_mem_core::db;
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 use super::routes::{
-    context_inject, health, memory_save, observations_batch, readiness, search, search_by_file,
-    semantic_context, sessions_complete, sessions_init, sessions_observations, timeline, version,
+    admin_shutdown, context_inject, health, memory_save, observations_batch, readiness, search,
+    search_by_file, semantic_context, sessions_complete, sessions_init, sessions_observations,
+    timeline, version,
 };
 
 #[derive(Clone)]
@@ -17,6 +19,7 @@ pub struct AppState {
     pub conn: Arc<Mutex<Connection>>,
     pub initialized: bool,
     pub mcp_ready: bool,
+    pub shutdown: Option<Arc<Notify>>,
 }
 
 impl AppState {
@@ -25,6 +28,14 @@ impl AppState {
             conn: Arc::new(Mutex::new(conn)),
             initialized: true,
             mcp_ready: true,
+            shutdown: None,
+        }
+    }
+
+    pub fn with_shutdown(conn: Connection, shutdown: Arc<Notify>) -> Self {
+        Self {
+            shutdown: Some(shutdown),
+            ..Self::new(conn)
         }
     }
 
@@ -42,7 +53,11 @@ pub fn default_db_path() -> PathBuf {
 }
 
 pub fn build_router() -> Router {
-    let conn = db::open_or_create(default_db_path()).expect("failed to open claude-mem database");
+    let db_path = default_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).expect("failed to create claude-mem data directory");
+    }
+    let conn = db::open_or_create(db_path).expect("failed to open claude-mem database");
     build_router_with_state(AppState::new(conn))
 }
 
@@ -51,6 +66,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/readiness", get(readiness))
         .route("/api/version", get(version))
+        .route("/api/admin/shutdown", post(admin_shutdown))
         .route("/api/sessions/init", post(sessions_init))
         .route("/api/sessions/observations", post(sessions_observations))
         .route("/api/sessions/complete", post(sessions_complete))

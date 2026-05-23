@@ -99,6 +99,13 @@ pub async fn version() -> Json<Value> {
     Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
 }
 
+pub async fn admin_shutdown(State(state): State<AppState>) -> Json<Value> {
+    if let Some(shutdown) = &state.shutdown {
+        shutdown.notify_waiters();
+    }
+    Json(json!({ "success": true }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInitRequest {

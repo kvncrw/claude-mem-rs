@@ -166,7 +166,7 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     assert!(context.contains("Dynatron power cap"));
 
     let (status, complete) = json_request(
-        app,
+        app.clone(),
         Method::POST,
         "/api/sessions/complete",
         json!({ "contentSessionId": "claude-http-content-e2e", "platformSource": "claude" }),
@@ -174,4 +174,9 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(complete["completed"], true);
+
+    let (status, shutdown) =
+        json_request(app, Method::POST, "/api/admin/shutdown", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shutdown["success"], true);
 }
