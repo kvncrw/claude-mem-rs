@@ -24,3 +24,5 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 bon = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
