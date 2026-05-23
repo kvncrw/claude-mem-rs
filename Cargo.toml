@@ -40,6 +40,7 @@ serde_json = "1"
 # Errors
 thiserror = "1"
 anyhow = "1"
+libc = "0.2"
 
 # Dates (RFC3339 ↔ ISO-8601 strings, epoch ms)
 time = { version = "0.3", features = [
