@@ -113,20 +113,7 @@ pub fn mark_session_completed(conn: &Connection, id: i64) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    // ISO-8601 with millisecond precision — same shape the TS side emits.
     let secs = now_ms / 1000;
-    let ms = now_ms % 1000;
-    let completed_at = format!(
-        "{}.{}Z",
-        time::OffsetDateTime::from_unix_timestamp(secs)
-            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default()
-            .trim_end_matches("Z")
-            .trim_end_matches(|c: char| !c.is_ascii_digit()),
-        ms
-    );
-    // Simpler: use time crate's direct format.
     let completed_at = time::OffsetDateTime::from_unix_timestamp(secs)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
         .format(&time::format_description::well_known::Rfc3339)
