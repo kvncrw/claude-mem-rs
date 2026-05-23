@@ -23,6 +23,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 tempfile = { workspace = true }
 bon = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
