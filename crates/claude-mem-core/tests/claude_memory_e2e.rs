@@ -1,8 +1,7 @@
 //! Claude memory lifecycle e2e coverage for the Rust fork.
 //!
-//! This deliberately stays at the highest implemented Rust layer today:
-//! the hook binary and worker HTTP routes are still stubs, so this flexes
-//! the complete core memory path those layers will call into.
+//! This flexes the complete core memory path under the worker and hook
+//! e2e coverage, including session isolation and recall formatting.
 
 use claude_mem_core::context::formatters::{format_observation, FormatOptions};
 use claude_mem_core::context::observation_compiler::{query_observations, ObservationQuery};
