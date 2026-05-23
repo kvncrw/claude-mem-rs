@@ -155,6 +155,7 @@ impl SearchOrchestrator {
             strategy_hint: match args.get("strategy").map(String::as_str) {
                 Some("sqlite") => Some(SearchStrategyHint::Sqlite),
                 Some("chroma") => Some(SearchStrategyHint::Chroma),
+                Some("qdrant") => Some(SearchStrategyHint::Qdrant),
                 Some("hybrid") => Some(SearchStrategyHint::Hybrid),
                 Some("auto") => Some(SearchStrategyHint::Auto),
                 _ => None,

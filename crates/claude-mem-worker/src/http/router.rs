@@ -13,6 +13,8 @@ use super::routes::{
     search_by_concept, search_by_file, search_by_type, semantic_context, sessions_complete,
     sessions_init, sessions_observations, timeline, version,
 };
+#[cfg(feature = "qdrant")]
+use super::routes::{qdrant_health, qdrant_reindex};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -79,5 +81,18 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/search/by-concept", get(search_by_concept))
         .route("/api/search/by-type", get(search_by_type))
         .route("/api/observations/batch", post(observations_batch))
+        .merge(qdrant_routes())
         .with_state(state)
+}
+
+#[cfg(feature = "qdrant")]
+fn qdrant_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/vector/qdrant/health", get(qdrant_health))
+        .route("/api/vector/qdrant/reindex", post(qdrant_reindex))
+}
+
+#[cfg(not(feature = "qdrant"))]
+fn qdrant_routes() -> Router<AppState> {
+    Router::new()
 }

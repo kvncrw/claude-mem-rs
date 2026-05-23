@@ -50,6 +50,7 @@ impl Default for OrderBy {
 pub enum SearchStrategyHint {
     Sqlite,
     Chroma,
+    Qdrant,
     Hybrid,
     Auto,
 }

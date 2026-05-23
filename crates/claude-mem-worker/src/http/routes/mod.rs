@@ -22,9 +22,11 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use super::router::AppState;
+#[cfg(feature = "qdrant")]
+use crate::search::qdrant::{QdrantClient, QdrantConfig, QdrantStatus};
 use crate::search::result_formatter::{ResultFormatter, SearchResults};
 use crate::search::strategies::{
-    DateRange, OrderBy, SearchType, SqliteSearchStrategy, StrategySearchOptions,
+    DateRange, OrderBy, SearchStrategyHint, SearchType, SqliteSearchStrategy, StrategySearchOptions,
 };
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
@@ -218,59 +220,63 @@ pub async fn sessions_observations(
         ));
     };
 
-    let conn = state.conn.lock().unwrap();
-    let session = get_session_by_content_id(&conn, &req.content_session_id)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::bad_request("unknown contentSessionId"))?;
-    let memory_session_id = match session.memory_session_id {
-        Some(id) => id,
-        None => {
-            let generated = format!("rust-local-memory:{}", req.content_session_id);
-            update_memory_session_id(&conn, &req.content_session_id, &generated)
-                .map_err(ApiError::internal)?;
-            generated
-        }
-    };
-    let project = if session.project.is_empty() {
-        req.cwd.unwrap_or_else(|| "unknown".into())
-    } else {
-        session.project
-    };
-    let prompt_number = get_prompt_number_from_user_prompts(&conn, &req.content_session_id)
+    let (memory_session_id, result) = {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, &req.content_session_id)
+            .map_err(ApiError::internal)?
+            .ok_or_else(|| ApiError::bad_request("unknown contentSessionId"))?;
+        let memory_session_id = match session.memory_session_id {
+            Some(id) => id,
+            None => {
+                let generated = format!("rust-local-memory:{}", req.content_session_id);
+                update_memory_session_id(&conn, &req.content_session_id, &generated)
+                    .map_err(ApiError::internal)?;
+                generated
+            }
+        };
+        let project = if session.project.is_empty() {
+            req.cwd.unwrap_or_else(|| "unknown".into())
+        } else {
+            session.project
+        };
+        let prompt_number = get_prompt_number_from_user_prompts(&conn, &req.content_session_id)
+            .map_err(ApiError::internal)?;
+        let (created_at, created_at_epoch) = now_timestamp();
+        let narrative = format!(
+            "Claude tool `{}` ran with input {} and response {}",
+            tool_name,
+            compact_json(req.tool_input.as_ref()),
+            compact_json(req.tool_response.as_ref())
+        );
+        let (files_read, files_modified) = tool_file_paths(tool_name, req.tool_input.as_ref());
+        let observation = ObservationInput {
+            r#type: "discovery".into(),
+            title: Some(format!("{} tool use", tool_name)),
+            subtitle: Some("Claude Code PostToolUse".into()),
+            narrative: Some(strip_private_tags(&narrative).into_owned()),
+            facts: Some(vec![format!("Tool: {}", tool_name)]),
+            concepts: Some(vec!["claude-code".into(), "tool-use".into()]),
+            files_read,
+            files_modified,
+            created_at,
+            created_at_epoch,
+            generated_by_model: Some("rust-local".into()),
+            ..Default::default()
+        };
+        let result = store_batch(
+            &conn,
+            &memory_session_id,
+            &project,
+            &[observation],
+            None,
+            Some(prompt_number),
+            Some(0),
+            Some(created_at_epoch),
+        )
         .map_err(ApiError::internal)?;
-    let (created_at, created_at_epoch) = now_timestamp();
-    let narrative = format!(
-        "Claude tool `{}` ran with input {} and response {}",
-        tool_name,
-        compact_json(req.tool_input.as_ref()),
-        compact_json(req.tool_response.as_ref())
-    );
-    let (files_read, files_modified) = tool_file_paths(tool_name, req.tool_input.as_ref());
-    let observation = ObservationInput {
-        r#type: "discovery".into(),
-        title: Some(format!("{} tool use", tool_name)),
-        subtitle: Some("Claude Code PostToolUse".into()),
-        narrative: Some(strip_private_tags(&narrative).into_owned()),
-        facts: Some(vec![format!("Tool: {}", tool_name)]),
-        concepts: Some(vec!["claude-code".into(), "tool-use".into()]),
-        files_read,
-        files_modified,
-        created_at,
-        created_at_epoch,
-        generated_by_model: Some("rust-local".into()),
-        ..Default::default()
+        (memory_session_id, result)
     };
-    let result = store_batch(
-        &conn,
-        &memory_session_id,
-        &project,
-        &[observation],
-        None,
-        Some(prompt_number),
-        Some(0),
-        Some(created_at_epoch),
-    )
-    .map_err(ApiError::internal)?;
+    index_observation_ids_if_enabled(&state, &result.observation_ids).await;
 
     Ok(Json(json!({
         "success": true,
@@ -326,45 +332,48 @@ pub async fn memory_save(
     let memory_session_id = format!("manual-memory:{}", project);
     let (created_at, created_at_epoch) = now_timestamp();
 
-    let conn = state.conn.lock().unwrap();
-    create_session(
-        &conn,
-        &CreateSessionInput {
-            content_session_id: content_session_id.clone(),
-            project: project.clone(),
-            user_prompt: Some("Manual memory".into()),
-            started_at: created_at.clone(),
-            started_at_epoch: created_at_epoch,
-        },
-    )
-    .map_err(ApiError::internal)?;
-    update_memory_session_id(&conn, &content_session_id, &memory_session_id)
-        .map_err(ApiError::internal)?;
-
     let title = req
         .title
         .unwrap_or_else(|| text.chars().take(60).collect::<String>());
-    let observation = ObservationInput {
-        r#type: "discovery".into(),
-        title: Some(title.clone()),
-        subtitle: Some("Manual memory".into()),
-        narrative: Some(text),
-        created_at,
-        created_at_epoch,
-        generated_by_model: Some("manual".into()),
-        ..Default::default()
+    let result = {
+        let conn = state.conn.lock().unwrap();
+        create_session(
+            &conn,
+            &CreateSessionInput {
+                content_session_id: content_session_id.clone(),
+                project: project.clone(),
+                user_prompt: Some("Manual memory".into()),
+                started_at: created_at.clone(),
+                started_at_epoch: created_at_epoch,
+            },
+        )
+        .map_err(ApiError::internal)?;
+        update_memory_session_id(&conn, &content_session_id, &memory_session_id)
+            .map_err(ApiError::internal)?;
+
+        let observation = ObservationInput {
+            r#type: "discovery".into(),
+            title: Some(title.clone()),
+            subtitle: Some("Manual memory".into()),
+            narrative: Some(text),
+            created_at,
+            created_at_epoch,
+            generated_by_model: Some("manual".into()),
+            ..Default::default()
+        };
+        store_batch(
+            &conn,
+            &memory_session_id,
+            &project,
+            &[observation],
+            None,
+            Some(0),
+            Some(0),
+            Some(created_at_epoch),
+        )
+        .map_err(ApiError::internal)?
     };
-    let result = store_batch(
-        &conn,
-        &memory_session_id,
-        &project,
-        &[observation],
-        None,
-        Some(0),
-        Some(0),
-        Some(created_at_epoch),
-    )
-    .map_err(ApiError::internal)?;
+    index_observation_ids_if_enabled(&state, &result.observation_ids).await;
     Ok(Json(json!({
         "success": true,
         "id": result.observation_ids[0],
@@ -441,9 +450,39 @@ pub async fn search(
         .cloned()
         .unwrap_or_default();
     let options = search_options_from_query(&query, &q);
+    #[cfg(feature = "qdrant")]
+    let (qdrant_ids, used_qdrant, fell_back) = if should_use_qdrant(&options, &q) {
+        match QdrantClient::from_env_if_enabled() {
+            Some(client) => match client
+                .search_observation_ids(&q, parse_limit(query.get("limit"), 20) * 4)
+                .await
+            {
+                Ok(ids) => (Some(ids), true, false),
+                Err(error) => {
+                    tracing::warn!(%error, "qdrant search failed; falling back to sqlite");
+                    (None, false, true)
+                }
+            },
+            None => (None, false, true),
+        }
+    } else {
+        (None, false, false)
+    };
+    #[cfg(not(feature = "qdrant"))]
+    let (qdrant_ids, used_qdrant, fell_back): (Option<Vec<i64>>, bool, bool) = (None, false, false);
+
     let conn = state.conn.lock().unwrap();
     let result = SqliteSearchStrategy::new().search(&conn, &options);
-    let rows = result.results.observations;
+    let rows = if let Some(ids) = qdrant_ids {
+        get_observations_by_ids(&conn, &ids)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .filter(|row| observation_matches_options(row, &options))
+            .take(parse_limit(query.get("limit"), 20) as usize)
+            .collect()
+    } else {
+        result.results.observations
+    };
     let sessions = result.results.sessions;
     let prompts = result.results.prompts;
     let total_results = rows.len() + sessions.len() + prompts.len();
@@ -466,7 +505,10 @@ pub async fn search(
         "sessions": sessions,
         "prompts": prompts,
         "count": total_results,
-        "totalResults": total_results
+        "totalResults": total_results,
+        "strategy": if used_qdrant { "qdrant" } else { "sqlite" },
+        "usedQdrant": used_qdrant,
+        "fellBack": fell_back
     })))
 }
 
@@ -615,6 +657,54 @@ pub async fn search_by_type(
     Ok(Json(json!({ "observations": rows, "count": rows.len() })))
 }
 
+#[cfg(feature = "qdrant")]
+pub async fn qdrant_health() -> ApiResult<Value> {
+    let Some(config) = QdrantConfig::from_env_if_enabled() else {
+        return Ok(Json(json!({ "enabled": false })));
+    };
+    let client = QdrantClient::new(config.clone());
+    let reachable = client.ensure_collection().await.is_ok();
+    Ok(Json(json!({
+        "qdrant": QdrantStatus::from(&config),
+        "reachable": reachable
+    })))
+}
+
+#[cfg(feature = "qdrant")]
+#[derive(Debug, Deserialize)]
+pub struct QdrantReindexRequest {
+    project: Option<String>,
+    limit: Option<i64>,
+}
+
+#[cfg(feature = "qdrant")]
+pub async fn qdrant_reindex(
+    State(state): State<AppState>,
+    Json(req): Json<QdrantReindexRequest>,
+) -> ApiResult<Value> {
+    let client = QdrantClient::from_env_if_enabled()
+        .ok_or_else(|| ApiError::bad_request("qdrant is not enabled"))?;
+    let rows = {
+        let conn = state.conn.lock().unwrap();
+        query_observations(
+            &conn,
+            &ObservationQuery {
+                project: req.project,
+                limit: req.limit.unwrap_or(100).clamp(1, 10_000),
+            },
+        )
+        .map_err(ApiError::internal)?
+    };
+    client
+        .upsert_observations(&rows)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({
+        "success": true,
+        "indexed": rows.len()
+    })))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ObservationsBatchRequest {
     ids: Vec<i64>,
@@ -732,8 +822,30 @@ fn search_options_from_query(query: &HashMap<String, String>, q: &str) -> Strate
             Some("relevance") => OrderBy::Relevance,
             _ => OrderBy::DateDesc,
         },
+        strategy_hint: match query.get("strategy").map(String::as_str) {
+            Some("sqlite") => Some(SearchStrategyHint::Sqlite),
+            Some("chroma") => Some(SearchStrategyHint::Chroma),
+            Some("qdrant") => Some(SearchStrategyHint::Qdrant),
+            Some("hybrid") => Some(SearchStrategyHint::Hybrid),
+            Some("auto") => Some(SearchStrategyHint::Auto),
+            _ => None,
+        },
         ..Default::default()
     }
+}
+
+#[cfg(feature = "qdrant")]
+fn should_use_qdrant(options: &StrategySearchOptions, query: &str) -> bool {
+    !query.trim().is_empty()
+        && matches!(
+            options.strategy_hint,
+            Some(SearchStrategyHint::Qdrant | SearchStrategyHint::Hybrid)
+                | Some(SearchStrategyHint::Auto)
+        )
+        && matches!(
+            options.search_type,
+            SearchType::All | SearchType::Observations
+        )
 }
 
 fn split_csv(value: Option<&String>) -> Vec<String> {
@@ -777,6 +889,55 @@ fn compact_json(value: Option<&Value>) -> String {
         .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "null".into()))
         .unwrap_or_else(|| "null".into())
 }
+
+fn observation_matches_options(
+    row: &claude_mem_core::types::ObservationRow,
+    options: &StrategySearchOptions,
+) -> bool {
+    options
+        .project
+        .as_ref()
+        .is_none_or(|project| row.project == *project)
+        && options.date_range.as_ref().is_none_or(|range| {
+            range
+                .start_epoch
+                .is_none_or(|start| row.created_at_epoch >= start)
+                && range
+                    .end_epoch
+                    .is_none_or(|end| row.created_at_epoch <= end)
+        })
+        && (options.obs_type.is_empty() || options.obs_type.contains(&row.r#type))
+        && (options.concepts.is_empty()
+            || row.concepts.as_ref().is_some_and(|concepts| {
+                options
+                    .concepts
+                    .iter()
+                    .any(|concept| concepts.contains(concept))
+            }))
+}
+
+#[cfg(feature = "qdrant")]
+async fn index_observation_ids_if_enabled(state: &AppState, ids: &[i64]) {
+    let Some(client) = QdrantClient::from_env_if_enabled() else {
+        return;
+    };
+    let rows = {
+        let conn = state.conn.lock().unwrap();
+        match get_observations_by_ids(&conn, ids) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "failed to load observations for qdrant indexing");
+                return;
+            }
+        }
+    };
+    if let Err(error) = client.upsert_observations(&rows).await {
+        tracing::warn!(%error, "qdrant indexing failed");
+    }
+}
+
+#[cfg(not(feature = "qdrant"))]
+async fn index_observation_ids_if_enabled(_state: &AppState, _ids: &[i64]) {}
 
 fn tool_file_paths(
     tool_name: &str,

@@ -25,6 +25,7 @@ The Rust port currently covers the normal Claude lifecycle path:
 - search helpers by file, concept, and type
 - timeline expansion around a search result
 - semantic context lookup through SQLite FTS5
+- optional self-hosted Qdrant indexing/search for observations
 - Claude context injection
 - session completion hook
 - worker health, readiness, version, PID file, and graceful HTTP shutdown
@@ -37,6 +38,7 @@ The original TypeScript project also includes broader UI, installer, multi-edito
 ```bash
 cargo build --workspace
 cargo test --workspace
+cargo test -p claude-mem-worker --features qdrant
 ```
 
 Known warning: `bon::Builder` currently emits `unexpected cfg condition name: rust_analyzer` warnings during builds. The test suite is otherwise green.
@@ -57,6 +59,50 @@ export CLAUDE_MEM_HOME=/path/to/data-dir
 export CLAUDE_MEM_WORKER_PORT=37777
 export CLAUDE_MEM_WORKER_HOST=127.0.0.1
 export CLAUDE_MEM_WORKER_URL=http://127.0.0.1:37777
+```
+
+## Optional Qdrant
+
+Qdrant support is optional and self-hosted. No commercial Qdrant account is required.
+
+Run Qdrant locally:
+
+```bash
+docker run --rm -p 6333:6333 qdrant/qdrant
+```
+
+Build the worker with Qdrant support:
+
+```bash
+cargo run -p claude-mem-worker --features qdrant
+```
+
+Enable Qdrant at runtime:
+
+```bash
+export CLAUDE_MEM_QDRANT_ENABLED=true
+export CLAUDE_MEM_QDRANT_URL=http://127.0.0.1:6333
+export CLAUDE_MEM_QDRANT_COLLECTION=claude_mem_observations
+```
+
+The Rust worker uses a deterministic local hash embedding, so Qdrant does not require an embedding API key. SQLite remains the source of truth; if Qdrant is disabled or unavailable, memory writes and search fall back to SQLite.
+
+Qdrant endpoints:
+
+```bash
+curl http://127.0.0.1:37777/api/vector/qdrant/health
+
+curl -X POST http://127.0.0.1:37777/api/vector/qdrant/reindex \
+  -H 'content-type: application/json' \
+  -d '{"project":"my-project","limit":1000}'
+
+curl 'http://127.0.0.1:37777/api/search?strategy=qdrant&query=important&project=my-project'
+```
+
+Optional real-Qdrant smoke coverage:
+
+```bash
+QDRANT_URL=http://127.0.0.1:6333 cargo test -p claude-mem-worker --features qdrant real_qdrant_smoke
 ```
 
 ## Worker HTTP

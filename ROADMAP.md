@@ -15,16 +15,25 @@ Goal: add optional graph-backed memory for entities, relationships, decisions, f
 
 ## Qdrant Vector Search
 
-Goal: replace the old Chroma vector layer with a Qdrant-backed semantic index.
+Status: initial optional self-hosted Qdrant support exists behind the worker `qdrant` feature.
 
-- Define embedding record IDs that remain stable across SQLite, Qdrant, and future graph references.
-- Add a `VectorStore` trait with SQLite-only fallback and Qdrant implementation behind a feature flag.
-- Add collection bootstrap, schema/version metadata, and health checks.
-- Add batch backfill from existing observations, prompts, and summaries.
-- Add incremental indexing hooks after new memory writes.
-- Add hybrid retrieval that combines Qdrant semantic results with SQLite FTS5 filters.
+Implemented:
+
+- Observation point IDs are stable SQLite observation IDs.
+- Qdrant is feature-gated and runtime-gated by `CLAUDE_MEM_QDRANT_*` env vars.
+- Collection bootstrap is automatic.
+- New observations are indexed opportunistically after memory writes.
+- `/api/vector/qdrant/reindex` backfills recent/project-scoped observations.
+- `/api/search?strategy=qdrant` searches Qdrant and falls back to SQLite.
+- Unit/integration/e2e coverage uses a fake Qdrant server, plus optional `QDRANT_URL` smoke coverage.
+
+Remaining:
+
+- Add explicit schema/version metadata in collection payload or a sidecar marker.
+- Extend indexing beyond observations to prompts and summaries.
+- Add hybrid ranking that merges Qdrant scores with SQLite FTS5/BM25 results.
 - Add migration tooling for Chroma-to-Qdrant if an old Chroma directory is present.
-- Add e2e tests with an optional Qdrant container or externally supplied Qdrant URL.
+- Add containerized CI coverage for real Qdrant.
 
 ## Migration Principles
 

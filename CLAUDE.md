@@ -9,7 +9,7 @@ Multi-crate workspace:
 - **`claude-mem-core`** — types, SQLite schema (rusqlite + FTS5), context compiler,
   shared utils. No HTTP.
 - **`claude-mem-worker`** — axum HTTP API (mcp tool surface), search strategies
-  (FTS5 + BM25; no embedding), session/queue managers. Depends on core.
+  (FTS5 + BM25, optional Qdrant), session/queue managers. Depends on core.
 - **`claude-mem-supervisor`** — process lifecycle, health monitor, graceful
   shutdown, hook pipeline. Depends on worker.
 - **`claude-mem-sdk`** — LLM-facing parser (`ParsedObservation`, `ParsedSummary`)
@@ -28,6 +28,7 @@ schema mirror is in `crates/claude-mem-core/src/db/migrations.rs`.
 ```bash
 cargo build --workspace
 cargo test --workspace
+cargo test -p claude-mem-worker --features qdrant
 cargo test -p claude-mem-worker --features chroma  # ignored tests
 cargo run -p claude-mem-worker                      # HTTP worker
 cargo run -p claude-mem-mcp                         # stdio MCP server
@@ -39,8 +40,10 @@ plan lives in `ROADMAP.md`.
 
 ## Development notes
 
-- FTS5 only — the Chroma vector layer is gated behind `#[cfg(feature = "chroma")]`
-  and currently `#[ignore]`d. Resurrection is a future phase.
+- SQLite remains authoritative. Qdrant is optional behind `feature = "qdrant"`
+  and `CLAUDE_MEM_QDRANT_*` env vars; it must fall back cleanly to SQLite.
+- The old Chroma vector layer is still only represented by compatibility names
+  and cleanup tests. Do not revive it; Qdrant is the replacement path.
 - The hook pipeline: **stdin → adapter → handler → worker HTTP → HookResult →
   stdout JSON + exit code**. Mirrors `src/cli/hook-command.ts` exactly.
 - Dual session IDs: `content_session_id` (user-visible, immutable) and
