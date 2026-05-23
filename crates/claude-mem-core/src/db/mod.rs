@@ -24,6 +24,13 @@ pub fn open<P: AsRef<Path>>(path: P) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Open a database file and apply all migrations.
+pub fn open_or_create<P: AsRef<Path>>(path: P) -> Result<Connection> {
+    let conn = open(path)?;
+    migrations::apply_all(&conn)?;
+    Ok(conn)
+}
+
 /// Open an in-memory database with the full schema applied.
 /// Used by tests, and also as the "fresh install" path.
 pub fn open_in_memory() -> Result<Connection> {
