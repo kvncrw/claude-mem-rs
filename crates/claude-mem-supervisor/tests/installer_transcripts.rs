@@ -77,6 +77,41 @@ fn installer_writes_posix_runtime_integration_files() {
         "startup|clear|compact"
     );
     assert_eq!(hooks["hooks"]["PostToolUse"][0]["matcher"], "*");
+
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        settings["hooks"]["SessionStart"][0]["matcher"],
+        "startup|clear|compact"
+    );
+    assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "*");
+    assert_eq!(
+        settings["mcpServers"]["mcp-search"]["command"],
+        "/usr/local/bin/claude-mem"
+    );
+    assert!(
+        settings["mcpServers"]["mcp-search"]["env"]["CLAUDE_MEM_HOME"]
+            .as_str()
+            .unwrap()
+            .ends_with(".claude-mem")
+    );
+    assert!(settings["mcpServers"].get("claude-mem-rs").is_none());
+
+    let claude_state: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.path().join(".claude.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        claude_state["mcpServers"]["mcp-search"]["command"],
+        "/usr/local/bin/claude-mem"
+    );
+    assert!(
+        claude_state["mcpServers"]["mcp-search"]["env"]["CLAUDE_MEM_HOME"]
+            .as_str()
+            .unwrap()
+            .ends_with(".claude-mem")
+    );
+    assert!(claude_state["mcpServers"].get("claude-mem-rs").is_none());
 }
 
 #[tokio::test]

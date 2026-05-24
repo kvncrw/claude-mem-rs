@@ -140,6 +140,8 @@ fn install_ide(ide: &str, bin_path: &Path, dry_run: bool, actions: &mut Vec<Stri
     match ide {
         "claude-code" => {
             write_claude_hook_manifest(bin_path, dry_run, actions)?;
+            write_claude_settings(bin_path, dry_run, actions)?;
+            write_claude_state_mcp(bin_path, dry_run, actions)?;
         }
         "cursor" => {
             write_cursor_mcp(bin_path, dry_run, actions)?;
@@ -290,6 +292,128 @@ fn write_claude_hook_manifest(
     }
     actions.push(format!("wrote Claude hook manifest {}", path.display()));
     Ok(())
+}
+
+fn write_claude_settings(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    let path = claude_config_dir().join("settings.json");
+    let mut settings = read_json_or_empty(&path);
+    settings["env"]["CLAUDE_MEM_HOME"] = json!(std::env::var("CLAUDE_MEM_HOME")
+        .unwrap_or_else(|_| { home_dir().join(".claude-mem").display().to_string() }));
+    settings["env"]["CLAUDE_MEM_WORKER_URL"] = json!(std::env::var("CLAUDE_MEM_WORKER_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:37777".to_owned()));
+
+    settings["enabledPlugins"][PLUGIN_ID] = json!(true);
+    settings["enabledPlugins"]["claude-mem@thedotmack"] = json!(false);
+    settings["enabledPlugins"]["claude-mem@kvncrw"] = json!(false);
+
+    if let Some(servers) = settings
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+    {
+        servers.remove("claude-mem-rs");
+    }
+    settings["mcpServers"]["mcp-search"] = json!({
+        "command": bin_path.display().to_string(),
+        "args": ["mcp"],
+        "env": worker_env_json()
+    });
+
+    let command = format!("\"{}\" hook claude-code", bin_path.display());
+    upsert_claude_hook(
+        &mut settings,
+        "SessionStart",
+        Some("startup|clear|compact"),
+        &format!("{command} context"),
+        60,
+    );
+    upsert_claude_hook(
+        &mut settings,
+        "UserPromptSubmit",
+        None,
+        &format!("{command} session-init"),
+        60,
+    );
+    upsert_claude_hook(
+        &mut settings,
+        "PostToolUse",
+        Some("*"),
+        &format!("{command} observation"),
+        120,
+    );
+    upsert_claude_hook(
+        &mut settings,
+        "Stop",
+        None,
+        &format!("{command} summarize"),
+        120,
+    );
+    upsert_claude_hook(
+        &mut settings,
+        "SessionEnd",
+        None,
+        &format!("{command} session-complete"),
+        30,
+    );
+
+    if !dry_run {
+        write_json_atomic(&path, &settings)?;
+    }
+    actions.push(format!("configured Claude settings {}", path.display()));
+    Ok(())
+}
+
+fn write_claude_state_mcp(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    let path = home_dir().join(".claude.json");
+    let mut state = read_json_or_empty(&path);
+    if let Some(servers) = state.get_mut("mcpServers").and_then(Value::as_object_mut) {
+        servers.remove("claude-mem-rs");
+    }
+    state["mcpServers"]["mcp-search"] = json!({
+        "command": bin_path.display().to_string(),
+        "args": ["mcp"],
+        "env": worker_env_json()
+    });
+    if !dry_run {
+        write_json_atomic(&path, &state)?;
+    }
+    actions.push(format!("configured Claude MCP state {}", path.display()));
+    Ok(())
+}
+
+fn upsert_claude_hook(
+    settings: &mut Value,
+    event: &str,
+    matcher: Option<&str>,
+    command: &str,
+    timeout: u64,
+) {
+    let Some(hooks) = settings["hooks"][event].as_array_mut() else {
+        settings["hooks"][event] = json!([]);
+        return upsert_claude_hook(settings, event, matcher, command, timeout);
+    };
+    hooks.retain(|entry| !is_managed_claude_mem_hook(entry));
+    let mut entry = json!({
+        "hooks": [{"type": "command", "command": command, "timeout": timeout}]
+    });
+    if let Some(matcher) = matcher {
+        entry["matcher"] = json!(matcher);
+    }
+    hooks.push(entry);
+}
+
+fn is_managed_claude_mem_hook(entry: &Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|hook| {
+            hook.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| {
+                    command.contains("claude-mem-rs") && command.contains(" hook claude-code ")
+                })
+        })
 }
 
 fn write_cursor_mcp(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
@@ -466,6 +590,11 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
 
 fn worker_env_json() -> Value {
     let mut env = BTreeMap::new();
+    env.insert(
+        "CLAUDE_MEM_HOME",
+        std::env::var("CLAUDE_MEM_HOME")
+            .unwrap_or_else(|_| home_dir().join(".claude-mem").display().to_string()),
+    );
     if let Ok(value) = std::env::var("CLAUDE_MEM_WORKER_URL") {
         env.insert("CLAUDE_MEM_WORKER_URL", value);
     }
