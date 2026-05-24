@@ -51,6 +51,7 @@ Implemented in Rust:
 
 Remaining:
 
+- Evaluate and integrate Vulcan MCP as a supported MCP runtime/backend for memory tooling where it improves local tool orchestration, installer UX, or cross-agent interoperability.
 - Harden Claude CLI resume/session-id capture against real Claude CLI JSON/stream output variants.
 - Add real-provider smoke tests behind explicit env gates for Claude, Gemini, and OpenRouter.
 - Expand provider fallback telemetry and retry reporting in admin routes.
