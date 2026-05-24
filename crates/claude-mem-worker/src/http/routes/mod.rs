@@ -161,13 +161,13 @@ pub async fn root_viewer() -> Html<&'static str> {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>claude-mem-rs</title>
   <style>
-    :root{color-scheme:light;--bg:#f6f4ef;--panel:#fffefa;--line:#d9d2c4;--text:#14120f;--muted:#6d665b;--accent:#176b5d;--accent2:#9c3d2f;--code:#1e2528;--ok:#1f7a4d;--warn:#a15d00;--bad:#9f2d2d}
-    [data-theme=dark]{color-scheme:dark;--bg:#151615;--panel:#20211f;--line:#393b36;--text:#f1eee7;--muted:#aaa394;--accent:#64b6a7;--accent2:#e08a77;--code:#0e1111;--ok:#6bc48d;--warn:#e4ad5d;--bad:#ee7b7b}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    button,input,select,textarea{font:inherit;color:inherit}button{border:1px solid var(--line);background:var(--panel);border-radius:7px;padding:7px 10px;cursor:pointer}button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button.danger{color:var(--bad)}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:7px;background:var(--panel);padding:8px 10px}textarea{min-height:100px;resize:vertical}
-    header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--panel) 92%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}.bar{max-width:1480px;margin:0 auto;padding:14px 18px;display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center}.brand{display:flex;gap:11px;align-items:center}.mark{width:34px;height:34px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff;font-weight:800}.brand h1{font-size:18px;margin:0}.brand small{display:block;color:var(--muted);font-size:12px}.filters{display:grid;grid-template-columns:minmax(220px,1fr) 170px 170px;gap:10px}.actions{display:flex;gap:8px;align-items:center}.pill{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--muted);white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}.dot.ok{background:var(--ok)}
-    main{max-width:1480px;margin:0 auto;padding:18px;display:grid;grid-template-columns:300px minmax(0,1fr) 360px;gap:16px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0}.panel h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0;padding:12px 14px;border-bottom:1px solid var(--line)}.panel-body{padding:14px}.grid{display:grid;gap:10px}.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{border:1px solid var(--line);border-radius:7px;padding:10px}.stat b{display:block;font-size:22px}.stat span{color:var(--muted);font-size:12px}.tabs{display:flex;border-bottom:1px solid var(--line)}.tab{border:0;border-radius:0;border-right:1px solid var(--line);background:transparent}.tab.active{background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
-    .feed{display:grid;gap:10px}.card{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:13px}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.card h3{margin:0 0 4px;font-size:15px}.meta{color:var(--muted);font-size:12px;display:flex;gap:8px;flex-wrap:wrap}.badge{border:1px solid var(--line);border-radius:999px;padding:2px 7px}.content{margin-top:10px;white-space:pre-wrap}.facts{margin:8px 0 0;padding-left:18px}.facts li{margin:3px 0}.empty{padding:28px;text-align:center;color:var(--muted)}pre{white-space:pre-wrap;overflow:auto;background:var(--code);color:#f4f1e8;border-radius:7px;padding:11px;max-height:360px}.side-list{display:grid;gap:8px;max-height:260px;overflow:auto}.side-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:7px 0}.side-row:last-child{border-bottom:0}.drawer{position:fixed;inset:0;display:none;background:rgba(0,0,0,.32);z-index:20}.drawer.open{display:block}.drawer-card{position:absolute;right:0;top:0;height:100%;width:min(720px,100%);background:var(--panel);border-left:1px solid var(--line);display:grid;grid-template-rows:auto 1fr}.drawer-head{display:flex;justify-content:space-between;align-items:center;padding:14px;border-bottom:1px solid var(--line)}.drawer-content{padding:14px;overflow:auto}.row{display:flex;gap:8px;align-items:center}.split{display:grid;grid-template-columns:1fr 1fr;gap:10px}.muted{color:var(--muted)}@media(max-width:1100px){main{grid-template-columns:1fr}.filters{grid-template-columns:1fr}.bar{grid-template-columns:1fr}.actions{flex-wrap:wrap}.panel.right{order:3}}
+    :root{color-scheme:light;--bg:#f5f7fa;--panel:#ffffff;--panel2:#f0f4f8;--line:#cfd8e3;--text:#111827;--muted:#596779;--accent:#0f766e;--accent2:#3b82f6;--code:#101827;--ok:#15803d;--warn:#b45309;--bad:#b91c1c}
+    [data-theme=dark]{color-scheme:dark;--bg:#0d1117;--panel:#161b22;--panel2:#0f1722;--line:#303846;--text:#e6edf3;--muted:#97a6ba;--accent:#2dd4bf;--accent2:#60a5fa;--code:#05080d;--ok:#4ade80;--warn:#f59e0b;--bad:#f87171}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    button,input,select,textarea{font:inherit;color:inherit}button{border:1px solid var(--line);background:var(--panel);border-radius:7px;padding:7px 10px;cursor:pointer;min-height:34px}button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}input,select,textarea{width:100%;border:1px solid var(--line);border-radius:7px;background:var(--panel);padding:8px 10px;min-height:34px}textarea{min-height:110px;resize:vertical}
+    header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--panel) 94%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}.bar{max-width:1540px;margin:0 auto;padding:12px 18px;display:grid;grid-template-columns:auto minmax(340px,1fr) auto;gap:14px;align-items:center}.brand{display:flex;gap:10px;align-items:center}.mark{width:34px;height:34px;border-radius:7px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;color:#fff;font-weight:800}.brand h1{font-size:17px;margin:0}.brand small{display:block;color:var(--muted);font-size:12px}.filters{display:grid;grid-template-columns:minmax(260px,1fr) 180px 170px;gap:9px}.actions{display:flex;gap:8px;align-items:center}.pill{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--muted);white-space:nowrap}.dot{width:8px;height:8px;border-radius:50%;background:var(--bad)}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}
+    main{max-width:1540px;margin:0 auto;padding:16px 18px;display:grid;grid-template-columns:330px minmax(0,1fr) 380px;gap:14px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0}.panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0;padding:10px 12px;border-bottom:1px solid var(--line)}.panel-body{padding:12px}.grid{display:grid;gap:10px}.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}.stat{border:1px solid var(--line);border-radius:7px;padding:9px;background:var(--panel2)}.stat b{display:block;font-size:20px;line-height:1.15}.stat span{color:var(--muted);font-size:12px}.stat.ok b,.ok{color:var(--ok)}.stat.warn b,.warn{color:var(--warn)}.stat.bad b,.bad{color:var(--bad)}.ops{display:grid;gap:7px}.op{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:6px 0}.op:last-child{border-bottom:0}.op strong{font-weight:650}.tabs{display:flex;border-bottom:1px solid var(--line);overflow:auto}.tab{border:0;border-radius:0;border-right:1px solid var(--line);background:transparent;white-space:nowrap}.tab.active{background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--accent)}
+    .feed{display:grid;gap:9px}.card{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:12px}.card-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.card h3{margin:0 0 4px;font-size:15px;line-height:1.25}.meta{color:var(--muted);font-size:12px;display:flex;gap:7px;flex-wrap:wrap}.badge{border:1px solid var(--line);border-radius:999px;padding:2px 7px}.content{margin-top:9px;white-space:pre-wrap;overflow-wrap:anywhere}.facts{margin:8px 0 0;padding-left:18px}.facts li{margin:2px 0}.empty{padding:24px;text-align:center;color:var(--muted)}pre{white-space:pre-wrap;overflow:auto;background:var(--code);color:#dbeafe;border-radius:7px;padding:11px;max-height:430px}.side-list{display:grid;gap:7px;max-height:270px;overflow:auto}.side-row{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--line);padding:7px 0;text-align:left}.side-row:last-child{border-bottom:0}.event-list{display:grid;gap:7px;max-height:430px;overflow:auto}.event{border:1px solid var(--line);border-radius:7px;padding:8px;background:var(--panel2)}.event time{display:block;color:var(--muted);font-size:12px}.drawer{position:fixed;inset:0;display:none;background:rgba(0,0,0,.38);z-index:20}.drawer.open{display:block}.drawer-card{position:absolute;right:0;top:0;height:100%;width:min(780px,100%);background:var(--panel);border-left:1px solid var(--line);display:grid;grid-template-rows:auto 1fr}.drawer-head{display:flex;justify-content:space-between;align-items:center;padding:14px;border-bottom:1px solid var(--line)}.drawer-content{padding:14px;overflow:auto}.split{display:grid;grid-template-columns:1fr 1fr;gap:10px}.muted{color:var(--muted)}.small{font-size:12px}.nowrap{white-space:nowrap}@media(max-width:1160px){main{grid-template-columns:1fr}.filters{grid-template-columns:1fr}.bar{grid-template-columns:1fr}.actions{flex-wrap:wrap}.panel.right{order:3}}
   </style>
 </head>
 <body>
@@ -189,9 +189,10 @@ pub async fn root_viewer() -> Html<&'static str> {
   </header>
   <main>
     <aside class="panel">
-      <h2>Status</h2>
+      <h2>Operational State</h2>
       <div class="panel-body grid">
         <div class="stats" id="stats"></div>
+        <div class="ops" id="ops"></div>
         <button class="primary" id="saveBtn">Save Manual Memory</button>
         <button id="processQueueBtn">Process Pending Queue</button>
         <button id="exportBtn">Export JSON</button>
@@ -226,29 +227,32 @@ pub async fn root_viewer() -> Html<&'static str> {
         <pre id="contextOut"></pre>
       </div>
       <h2>Live Events</h2>
-      <div class="panel-body"><pre id="events"></pre></div>
+      <div class="panel-body"><div id="events" class="event-list"></div></div>
     </aside>
   </main>
   <div class="drawer" id="drawer"><div class="drawer-card"><div class="drawer-head"><strong id="drawerTitle"></strong><button id="drawerClose">Close</button></div><div class="drawer-content" id="drawerContent"></div></div></div>
   <script>
     const $=id=>document.getElementById(id);
-    const state={observations:[],summaries:[],prompts:[],projects:[],tab:'feed',theme:localStorage.cmemTheme||'light'};
+    const state={observations:[],summaries:[],projects:[],events:[],doctor:null,queue:null,processing:null,settings:null,tab:'feed',theme:localStorage.cmemTheme||'light',lastRefresh:0,lastEvent:0,refreshTimer:null};
     document.documentElement.dataset.theme=state.theme;
     const api=async(path,opts={})=>{const r=await fetch(path,{headers:{'content-type':'application/json'},...opts});const t=await r.text();let b;try{b=t?JSON.parse(t):null}catch{b=t}if(!r.ok)throw new Error(typeof b==='string'?b:(b&&b.error)||r.statusText);return b};
     const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const fmt=t=>t?new Date(t<1e12?t*1000:t).toLocaleString():'';
-    function stat(label,value){return `<div class="stat"><b>${esc(value)}</b><span>${esc(label)}</span></div>`}
-    function setConn(ok){$('connDot').className='dot '+(ok?'ok':'');$('connText').textContent=ok?'live':'offline'}
-    function merge(kind,items){const key=kind+'s';const by=new Map(state[key].map(x=>[x.id,x]));for(const item of items||[])by.set(item.id,item);state[key]=[...by.values()].sort((a,b)=>(b.created_at_epoch||0)-(a.created_at_epoch||0))}
-    function renderStats(s){$('stats').innerHTML=stat('sessions',s.sessions||0)+stat('observations',s.observations||0)+stat('summaries',s.summaries||0)+stat('prompts',s.prompts||0)}
-    function renderProjects(){const opts=['<option value="">All projects</option>'].concat(state.projects.map(p=>`<option>${esc(p.project||p)}</option>`)).join('');$('project').innerHTML=opts;$('contextProject').innerHTML='<option value="">Choose project</option>'+state.projects.map(p=>`<option>${esc(p.project||p)}</option>`).join('');$('projects').innerHTML=state.projects.map(p=>`<button data-project="${esc(p.project)}" class="side-row"><span>${esc(p.project)}</span><b>${p.observationCount||0}</b></button>`).join('')||'<div class="muted">No projects</div>';document.querySelectorAll('[data-project]').forEach(b=>b.onclick=()=>{$('project').value=b.dataset.project;refreshFeed()})}
-    function card(kind,item){const title=item.title||item.request||item.prompt_text||item.content_session_id||`${kind} #${item.id}`;const body=item.narrative||item.learned||item.prompt_text||item.completed||'';const facts=Array.isArray(item.facts)?item.facts:[];return `<article class="card" data-kind="${kind}" data-id="${item.id}"><div class="card-head"><div><h3>${esc(title)}</h3><div class="meta"><span class="badge">${esc(kind)}</span><span>${esc(item.project||'')}</span><span>${fmt(item.created_at_epoch)}</span><span>${esc(item.type||item.platform_source||'')}</span></div></div><button data-timeline="${item.id}">Timeline</button></div>${body?`<div class="content">${esc(body)}</div>`:''}${facts.length?`<ul class="facts">${facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul>`:''}</article>`}
+    const clip=(s,n=420)=>{s=String(s??'');return s.length>n?s.slice(0,n-3)+'...':s};
+    const age=ms=>{if(!ms)return 'never';const s=Math.max(0,Math.floor((Date.now()-ms)/1000));if(s<60)return s+'s ago';const m=Math.floor(s/60);if(m<60)return m+'m ago';const h=Math.floor(m/60);return h+'h ago'};
+    function stat(label,value,tone=''){return `<div class="stat ${tone}"><b>${esc(value)}</b><span>${esc(label)}</span></div>`}
+    function op(label,value,tone=''){return `<div class="op"><span>${esc(label)}</span><strong class="${tone}">${esc(value)}</strong></div>`}
+    function setConn(ok,warn=false){$('connDot').className='dot '+(ok?(warn?'warn':'ok'):'');$('connText').textContent=ok?(warn?'stale':'live'):'offline'}
+    function renderStats(){const d=state.doctor||{},c=d.counts||{},a=d.activity||{},q=(state.queue&&state.queue.queue)||{},p=state.processing||{};const recent=(a.observations15m||0)+(a.summaries15m||0)+(a.prompts15m||0);$('stats').innerHTML=stat('worker',d.ok?'healthy':'down',d.ok?'ok':'bad')+stat('memory formed 15m',recent,recent?'ok':'warn')+stat('backlog p/r/f',`${q.totalPending||0}/${q.totalProcessing||p.processing||0}/${q.totalFailed||0}`,(q.totalFailed||0)?'bad':'ok')+stat('indexed corpus',`${c.observations||0} obs`,(c.observations||0)?'ok':'warn')+stat('summaries',c.summaries||0)+stat('prompts indexed',c.prompts||0);$('ops').innerHTML=op('MCP tools',d.mcpReady?'ready':'not ready',d.mcpReady?'ok':'bad')+op('Queue model',(q.totalPending||q.totalProcessing||q.totalFailed)?'active backlog':'caught up')+op('Search backend',d.qdrant&&d.qdrant.enabled?'qdrant':'sqlite')+op('Qdrant build',d.qdrant&&d.qdrant.compiled?'compiled':'not compiled')+op('Last observation',age(a.latestObservationEpoch))+op('Last summary',age(a.latestSummaryEpoch))+op('Last prompt',age(a.latestPromptEpoch))+op('Last stream event',age(state.lastEvent));}
+    function renderProjects(){const selected=$('project').value;const opts=['<option value="">All projects</option>'].concat(state.projects.map(p=>`<option>${esc(p.project||p)}</option>`)).join('');$('project').innerHTML=opts;$('project').value=selected;$('contextProject').innerHTML='<option value="">Choose project</option>'+state.projects.map(p=>`<option>${esc(p.project||p)}</option>`).join('');$('projects').innerHTML=state.projects.map(p=>`<button data-project="${esc(p.project)}" class="side-row"><span>${esc(p.project)}</span><b>${p.observationCount||0}</b></button>`).join('')||'<div class="muted">No projects</div>';document.querySelectorAll('[data-project]').forEach(b=>b.onclick=()=>{$('project').value=b.dataset.project;refreshFeed()})}
+    function card(kind,item){const title=clip(item.title||item.request||item.content_session_id||`${kind} #${item.id}`,120);const body=clip(item.narrative||item.learned||item.completed||'',520);const facts=Array.isArray(item.facts)?item.facts.slice(0,5):[];return `<article class="card" data-kind="${kind}" data-id="${item.id}"><div class="card-head"><div><h3>${esc(title)}</h3><div class="meta"><span class="badge">${esc(kind)}</span><span>${esc(item.project||'')}</span><span>${fmt(item.created_at_epoch)}</span><span>${esc(item.type||item.platform_source||'')}</span></div></div><button data-timeline="${item.id}" class="nowrap">Timeline</button></div>${body?`<div class="content">${esc(body)}</div>`:''}${facts.length?`<ul class="facts">${facts.map(f=>`<li>${esc(clip(f,180))}</li>`).join('')}</ul>`:''}</article>`}
     function filtered(items){const p=$('project').value,t=$('type').value;return items.filter(i=>(!p||i.project===p)&&(!t||i.type===t))}
-    function renderFeed(){const items=[...filtered(state.observations).map(i=>['observation',i]),...filtered(state.summaries).map(i=>['summary',i]),...state.prompts.map(i=>['prompt',i])].sort((a,b)=>(b[1].created_at_epoch||0)-(a[1].created_at_epoch||0));$('feed').innerHTML=items.map(([k,i])=>card(k,i)).join('');$('empty').hidden=items.length>0;document.querySelectorAll('[data-timeline]').forEach(b=>b.onclick=()=>loadTimeline(b.dataset.timeline))}
-    async function refreshAll(){const [stats,projects,obs,summ,prompts,queue]=await Promise.all([api('/api/stats'),api('/api/projects'),api('/api/observations?limit=100'),api('/api/summaries?limit=100'),api('/api/prompts?limit=100'),api('/api/pending-queue')]);renderStats(stats);state.projects=projects.projects||[];renderProjects();merge('observation',obs.observations);merge('summarie',summ.summaries);state.summaries=summ.summaries||state.summaries;state.prompts=prompts.prompts||[];renderQueue(queue);renderFeed()}
+    function renderFeed(){const items=[...filtered(state.observations).map(i=>['observation',i]),...filtered(state.summaries).map(i=>['summary',i])].sort((a,b)=>(b[1].created_at_epoch||0)-(a[1].created_at_epoch||0)).slice(0,80);$('feed').innerHTML=items.map(([k,i])=>card(k,i)).join('');$('empty').hidden=items.length>0;document.querySelectorAll('[data-timeline]').forEach(b=>b.onclick=()=>loadTimeline(b.dataset.timeline))}
+    async function refreshAll(){const [doctor,projects,obs,summ,queue,processing]=await Promise.all([api('/api/admin/doctor'),api('/api/projects'),api('/api/observations?limit=40'),api('/api/summaries?limit=40'),api('/api/pending-queue'),api('/api/processing-status')]);state.doctor=doctor;state.projects=projects.projects||[];state.observations=obs.observations||[];state.summaries=summ.summaries||[];state.queue=queue;state.processing=processing;state.lastRefresh=Date.now();renderStats();renderProjects();renderQueue();renderFeed();setConn(true)}
+    function scheduleRefresh(){clearTimeout(state.refreshTimer);state.refreshTimer=setTimeout(()=>refreshAll().catch(err=>eventLine('refresh_error',{error:err.message})),650)}
     async function refreshFeed(){renderFeed();if($('query').value.trim())await runSearch()}
-    function renderQueue(q){const queue=q.queue||{};$('queueSummary').textContent=`pending ${queue.totalPending||0}, processing ${queue.totalProcessing||0}, failed ${queue.totalFailed||0}`;$('queue').innerHTML=(queue.messages||[]).slice(0,20).map(m=>`<div class="side-row"><span>#${m.id} ${esc(m.messageType)}</span><span>${esc(m.status)}</span></div>`).join('')||'<div class="muted">Queue empty</div>'}
-    async function runSearch(){const q=$('query').value.trim();if(!q){$('searchOut').textContent='Run a search from the top bar.';return}setTab('search');const params=new URLSearchParams({query:q,limit:'25'});if($('project').value)params.set('project',$('project').value);const res=await api('/api/search?'+params);$('searchOut').textContent=JSON.stringify(res,null,2)}
+    function renderQueue(){const queue=(state.queue&&state.queue.queue)||{};const failed=queue.totalFailed||0,pending=queue.totalPending||0,processing=queue.totalProcessing||0;$('queueSummary').innerHTML=`<strong>${pending+processing+failed?'Backlog active':'Caught up'}</strong><div class="small muted">pending ${pending}, processing ${processing}, failed ${failed}. Successful rows are removed after processing.</div>`;$('queue').innerHTML=(queue.messages||[]).slice(0,20).map(m=>`<div class="side-row"><span>#${m.id} ${esc(m.messageType||'message')}</span><span>${esc(m.status)}</span></div>`).join('')||'<div class="muted">No persistent backlog.</div>'}
+    async function runSearch(){const q=$('query').value.trim();if(!q){$('searchOut').textContent='Run a search from the top bar.';return}setTab('search');const params=new URLSearchParams({query:q,limit:'25',format:'text'});if($('project').value)params.set('project',$('project').value);const res=await api('/api/search?'+params);$('searchOut').textContent=(res.content&&res.content[0]&&res.content[0].text)||JSON.stringify(res,null,2)}
     async function loadTimeline(id){setTab('timeline');const res=await api('/api/timeline?anchor='+encodeURIComponent(id)+'&depth_before=4&depth_after=4');$('timelineOut').textContent=JSON.stringify(res,null,2)}
     function setTab(tab){state.tab=tab;document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));for(const id of ['feed','search','timeline','admin'])$(id+'Tab').hidden=id!==tab}
     function openDrawer(title,html){$('drawerTitle').textContent=title;$('drawerContent').innerHTML=html;$('drawer').classList.add('open')}
@@ -256,13 +260,13 @@ pub async fn root_viewer() -> Html<&'static str> {
     $('themeBtn').onclick=()=>{state.theme=state.theme==='dark'?'light':'dark';localStorage.cmemTheme=state.theme;document.documentElement.dataset.theme=state.theme};
     $('query').addEventListener('keydown',e=>{if(e.key==='Enter')runSearch().catch(alert)});$('project').onchange=refreshFeed;$('type').onchange=refreshFeed;document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
     $('saveBtn').onclick=()=>openDrawer('Save Manual Memory',`<div class="grid"><input id="memProject" placeholder="project"><input id="memTitle" placeholder="title"><textarea id="memText" placeholder="memory text"></textarea><button class="primary" id="memSubmit">Save</button></div>`),setTimeout(()=>{$('memSubmit').onclick=async()=>{await api('/api/memory/save',{method:'POST',body:JSON.stringify({project:$('memProject').value||'manual',title:$('memTitle').value,text:$('memText').value})});$('drawer').classList.remove('open');refreshAll()}},0);
-    $('processQueueBtn').onclick=async()=>{const r=await api('/api/pending-queue/process',{method:'POST',body:'{}'});$('events').textContent='queue_processed '+JSON.stringify(r.result||r,null,2)+'\n'+$('events').textContent;refreshAll()};
+    $('processQueueBtn').onclick=async()=>{const r=await api('/api/pending-queue/process',{method:'POST',body:'{}'});eventLine('queue_processed',r.result||r);refreshAll()};
     $('exportBtn').onclick=async()=>{const r=await api('/api/export');openDrawer('Export JSON',`<pre>${esc(JSON.stringify(r,null,2))}</pre>`)};
     $('settingsBtn').onclick=async()=>{const s=await api('/api/settings');openDrawer('Settings',`<textarea id="settingsJson">${esc(JSON.stringify(s,null,2))}</textarea><button class="primary" id="settingsSave">Save</button>`);$('settingsSave').onclick=async()=>{await api('/api/settings',{method:'POST',body:$('settingsJson').value});$('drawer').classList.remove('open')}};
     $('logsBtn').onclick=async()=>{const r=await api('/api/logs?limit=200');openDrawer('Logs',`<button id="clearLogs">Clear</button><pre>${esc(JSON.stringify(r,null,2))}</pre>`);$('clearLogs').onclick=async()=>{await api('/api/logs/clear',{method:'POST',body:'{}'});$('drawer').classList.remove('open')}};
     $('doctorBtn').onclick=async()=>{$('adminOut').textContent=JSON.stringify(await api('/api/admin/doctor'),null,2)};$('branchBtn').onclick=async()=>{$('adminOut').textContent=JSON.stringify(await api('/api/branch/status'),null,2)};$('contextBtn').onclick=async()=>{const p=$('contextProject').value;if(!p)return;$('contextOut').textContent=await fetch('/api/context/inject?project='+encodeURIComponent(p)).then(r=>r.text())};
-    function eventLine(name,data){$('events').textContent=`${new Date().toLocaleTimeString()} ${name} ${JSON.stringify(data)}\n`+$('events').textContent.slice(0,5000)}
-    const es=new EventSource('/stream');es.onopen=()=>setConn(true);es.onerror=()=>setConn(false);for(const name of ['initial_load','memory_saved','session_initialized','session_completed','observation_processed','summary_processed','summary_stored','queue_processed','stream_lagged'])es.addEventListener(name,e=>{const data=JSON.parse(e.data);eventLine(name,data);if(name==='initial_load'){merge('observation',data.observations||[]);merge('summarie',data.summaries||[]);state.summaries=data.summaries||state.summaries;state.prompts=data.prompts||state.prompts;renderFeed()}else refreshAll().catch(()=>{})});
+    function eventLine(name,data){state.lastEvent=Date.now();state.events.unshift({name,data,time:new Date().toLocaleTimeString()});state.events=state.events.slice(0,60);$('events').innerHTML=state.events.map(e=>`<div class="event"><time>${esc(e.time)}</time><strong>${esc(e.name)}</strong><div class="small">${esc(clip(JSON.stringify(e.data),420))}</div></div>`).join('');renderStats()}
+    const es=new EventSource('/stream');es.onopen=()=>setConn(true);es.onerror=()=>setConn(false);for(const name of ['initial_load','memory_saved','session_initialized','session_completed','observation_processed','summary_processed','summary_stored','queue_processed','stream_lagged'])es.addEventListener(name,e=>{const data=JSON.parse(e.data);eventLine(name,data);if(name==='initial_load'){state.observations=data.observations||state.observations;state.summaries=data.summaries||state.summaries;renderFeed();scheduleRefresh()}else scheduleRefresh()});
     refreshAll().then(()=>setConn(true)).catch(err=>{setConn(false);$('events').textContent=err.message});
   </script>
 </body>
@@ -310,7 +314,10 @@ pub async fn admin_restart(State(state): State<AppState>) -> Json<Value> {
 }
 
 pub async fn admin_doctor(State(state): State<AppState>) -> ApiResult<Value> {
-    let stats = db_stats(&state)?;
+    let (stats, activity) = {
+        let conn = state.conn.lock().unwrap();
+        (db_stats_locked(&conn)?, db_activity_locked(&conn)?)
+    };
     let db_path = default_db_path();
     Ok(Json(json!({
         "ok": true,
@@ -322,6 +329,7 @@ pub async fn admin_doctor(State(state): State<AppState>) -> ApiResult<Value> {
         "initialized": state.initialized,
         "mcpReady": state.mcp_ready,
         "counts": stats,
+        "activity": activity,
         "qdrant": {
             "compiled": cfg!(feature = "qdrant"),
             "enabled": qdrant_enabled_env()
@@ -1953,6 +1961,21 @@ fn db_stats_locked(conn: &rusqlite::Connection) -> Result<Value, ApiError> {
     }))
 }
 
+fn db_activity_locked(conn: &rusqlite::Connection) -> Result<Value, ApiError> {
+    let since = now_timestamp().1 - (15 * 60 * 1000);
+    Ok(json!({
+        "windowMs": 15 * 60 * 1000,
+        "observations15m": count_since(conn, "observations", since)?,
+        "summaries15m": count_since(conn, "session_summaries", since)?,
+        "prompts15m": count_since(conn, "user_prompts", since)?,
+        "sessions15m": count_since_column(conn, "sdk_sessions", "started_at_epoch", since)?,
+        "latestObservationEpoch": max_epoch(conn, "observations")?,
+        "latestSummaryEpoch": max_epoch(conn, "session_summaries")?,
+        "latestPromptEpoch": max_epoch(conn, "user_prompts")?,
+        "latestSessionEpoch": max_epoch_column(conn, "sdk_sessions", "started_at_epoch")?
+    }))
+}
+
 fn get_session_by_id_locked(
     conn: &rusqlite::Connection,
     id: i64,
@@ -2056,6 +2079,39 @@ fn pending_queue_rows(
 
 fn count_table(conn: &rusqlite::Connection, table: &str) -> Result<i64, ApiError> {
     conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
+    .map_err(ApiError::internal)
+}
+
+fn count_since(conn: &rusqlite::Connection, table: &str, since: i64) -> Result<i64, ApiError> {
+    count_since_column(conn, table, "created_at_epoch", since)
+}
+
+fn count_since_column(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+    since: i64,
+) -> Result<i64, ApiError> {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE {column} >= ?1"),
+        [since],
+        |row| row.get(0),
+    )
+    .map_err(ApiError::internal)
+}
+
+fn max_epoch(conn: &rusqlite::Connection, table: &str) -> Result<Option<i64>, ApiError> {
+    max_epoch_column(conn, table, "created_at_epoch")
+}
+
+fn max_epoch_column(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<Option<i64>, ApiError> {
+    conn.query_row(&format!("SELECT MAX({column}) FROM {table}"), [], |row| {
         row.get(0)
     })
     .map_err(ApiError::internal)

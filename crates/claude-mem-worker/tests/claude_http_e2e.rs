@@ -253,11 +253,14 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     assert!(html.contains("Save Manual Memory"));
     assert!(html.contains("Process Pending Queue"));
     assert!(html.contains("Context Preview"));
+    assert!(html.contains("Operational State"));
+    assert!(html.contains("format:'text'"));
     assert!(html.contains("EventSource('/stream')"));
     assert!(html.contains("/api/pending-queue"));
     assert!(html.contains("/api/settings"));
     assert!(html.contains("/api/logs?limit=200"));
     assert!(html.contains("/api/branch/status"));
+    assert!(!html.contains("/api/prompts?limit=100"));
 
     let (status, settings) = json_request(
         app.clone(),
@@ -380,6 +383,15 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(doctor["ok"], true);
     assert_eq!(doctor["counts"]["summaries"], 1);
+    assert!(doctor["activity"]["observations15m"].as_i64().unwrap() >= 1);
+    assert!(doctor["activity"]["summaries15m"].as_i64().unwrap() >= 1);
+    assert!(doctor["activity"]["prompts15m"].as_i64().unwrap() >= 1);
+    assert!(
+        doctor["activity"]["latestObservationEpoch"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
 
     let (status, export) = get_json(app.clone(), "/api/export").await;
     assert_eq!(status, StatusCode::OK);
