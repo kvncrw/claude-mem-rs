@@ -254,6 +254,10 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     assert!(html.contains("Process Pending Queue"));
     assert!(html.contains("Context Preview"));
     assert!(html.contains("EventSource('/stream')"));
+    assert!(html.contains("/api/pending-queue"));
+    assert!(html.contains("/api/settings"));
+    assert!(html.contains("/api/logs?limit=200"));
+    assert!(html.contains("/api/branch/status"));
 
     let (status, settings) = json_request(
         app.clone(),
@@ -464,7 +468,7 @@ async fn sse_stream_emits_initial_snapshot_and_live_memory_events() {
 #[tokio::test]
 async fn v12_compatibility_routes_are_available() {
     let state = AppState::in_memory().unwrap();
-    let app = build_router_with_state(state);
+    let app = build_router_with_state(state.clone());
 
     let (status, instructions) = get_json(app.clone(), "/api/instructions").await;
     assert_eq!(status, StatusCode::OK);
@@ -551,10 +555,87 @@ async fn v12_compatibility_routes_are_available() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(process["success"], true);
     assert_eq!(process["result"]["messagesProcessed"], 0);
+    assert_eq!(process["messagesProcessed"], 0);
+
+    {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, "compat-content-e2e")
+            .unwrap()
+            .unwrap();
+        let store = PendingMessageStore::new(1);
+        store
+            .enqueue(
+                &conn,
+                &EnqueueInput {
+                    session_db_id: session.id,
+                    content_session_id: session.content_session_id.clone(),
+                    message_type: "observation".into(),
+                    tool_name: Some("Read".into()),
+                    tool_input: Some(json!({ "file_path": "/repo/pending.rs" })),
+                    tool_response: Some(json!({ "content": "still pending" })),
+                    cwd: Some("/repo".into()),
+                    prompt_number: Some(1),
+                    created_at_epoch: 1_717_234_200_000,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let failed_id = store
+            .enqueue(
+                &conn,
+                &EnqueueInput {
+                    session_db_id: session.id,
+                    content_session_id: session.content_session_id.clone(),
+                    message_type: "summarize".into(),
+                    last_assistant_message: Some("failed queue item".into()),
+                    prompt_number: Some(1),
+                    created_at_epoch: 1_717_234_300_000,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.mark_failed(&conn, failed_id).unwrap();
+    }
+
+    let (status, queue) = get_json(app.clone(), "/api/pending-queue").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(queue["queue"]["totalPending"], 1);
+    assert_eq!(queue["queue"]["totalFailed"], 1);
+    assert_eq!(queue["queue"]["messages"].as_array().unwrap().len(), 2);
+
+    let (status, all) = get_json(app.clone(), "/api/pending-queue/all").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["queue"]["totalPending"], 1);
+    assert_eq!(all["queue"]["totalFailed"], 1);
+
+    let (status, failed) = get_json(app.clone(), "/api/pending-queue/failed").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(failed["queue"]["totalPending"], 0);
+    assert_eq!(failed["queue"]["totalFailed"], 1);
+    assert_eq!(
+        failed["queue"]["messages"][0]["status"].as_str().unwrap(),
+        "failed"
+    );
+
+    let (status, clear_failed) = delete_json(app.clone(), "/api/pending-queue/failed").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(clear_failed["success"], true);
+    assert_eq!(clear_failed["clearedCount"], 1);
+
+    let (status, all_after_failed_clear) = get_json(app.clone(), "/api/pending-queue/all").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all_after_failed_clear["queue"]["totalPending"], 1);
+    assert_eq!(all_after_failed_clear["queue"]["totalFailed"], 0);
 
     let (status, clear) = delete_json(app.clone(), "/api/pending-queue/all").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(clear["success"], true);
+    assert_eq!(clear["clearedCount"], 1);
+
+    let (status, all_empty) = get_json(app.clone(), "/api/pending-queue/all").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all_empty["queue"]["totalPending"], 0);
+    assert_eq!(all_empty["queue"]["totalFailed"], 0);
 
     let (status, mcp) = get_json(app.clone(), "/api/mcp/status").await;
     assert_eq!(status, StatusCode::OK);
