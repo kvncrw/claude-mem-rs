@@ -175,6 +175,18 @@ async fn claude_hook_round_trip_creates_memory_and_injects_context() {
         .unwrap();
     assert_eq!(complete.exit_code, 0);
 
+    let completed_status: serde_json::Value = reqwest::get(format!(
+        "{}/api/sessions/status?contentSessionId=claude-hook-content-e2e",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(completed_status["session"]["status"], "completed");
+    assert_eq!(completed_status["hasSummary"], true);
+
     let _ = shutdown.send(());
 }
 
@@ -425,5 +437,83 @@ async fn claude_summarize_hook_reads_transcript_and_completes_session() {
     assert!(search["count"].as_i64().unwrap() >= 1);
     assert!(!search.to_string().contains("hidden reminder"));
 
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn claude_summarize_hook_infers_transcript_path_when_stop_omits_it() {
+    let (worker, shutdown) = spawn_worker().await;
+    let transcript_root = tempfile::TempDir::new().unwrap();
+    let prior_projects_dir = std::env::var_os("CLAUDE_MEM_CLAUDE_PROJECTS_DIR");
+    std::env::set_var("CLAUDE_MEM_CLAUDE_PROJECTS_DIR", transcript_root.path());
+
+    let session_id = "claude-stop-summary-fallback-e2e";
+    let project_dir = transcript_root
+        .path()
+        .join("-home-kcrawley-projects-cloudy-fork");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::write(
+        project_dir.join(format!("{session_id}.jsonl")),
+        r#"{"type":"user","message":{"content":"Summarize inferred transcript memory."}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Inferred Stop transcript summary should mention queue visibility and summary health."}]}}
+"#,
+    )
+    .unwrap();
+
+    let init = execute_hook(
+        "claude-code",
+        "session-init",
+        json!({
+            "session_id": session_id,
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "prompt": "Remember inferred transcript summarize hook parity."
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(init.exit_code, 0);
+
+    let summarize = execute_hook(
+        "claude-code",
+        "summarize",
+        json!({
+            "session_id": session_id,
+            "cwd": "/home/kcrawley/projects/cloudy-fork"
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summarize.exit_code, 0);
+
+    let status: serde_json::Value = reqwest::get(format!(
+        "{}/api/sessions/status?contentSessionId={session_id}",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(status["hasSummary"], true);
+    assert_eq!(status["session"]["status"], "completed");
+
+    let search: serde_json::Value = reqwest::get(format!(
+        "{}/api/search?query=summary%20health&project=cloudy-fork&limit=10",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(search["sessions"].as_array().unwrap().len(), 1);
+
+    if let Some(value) = prior_projects_dir {
+        std::env::set_var("CLAUDE_MEM_CLAUDE_PROJECTS_DIR", value);
+    } else {
+        std::env::remove_var("CLAUDE_MEM_CLAUDE_PROJECTS_DIR");
+    }
     let _ = shutdown.send(());
 }

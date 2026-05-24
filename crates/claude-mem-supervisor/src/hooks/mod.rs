@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const SUCCESS: i32 = 0;
 
@@ -446,17 +446,7 @@ async fn summarize_handler(
     let Some(session_id) = input.session_id.as_deref() else {
         return Ok(HookOutput::default());
     };
-    let source = if let Some(transcript_path) = input.transcript_path.as_deref() {
-        extract_last_transcript_message(transcript_path, "assistant", true).unwrap_or_default()
-    } else {
-        input
-            .tool_response
-            .as_ref()
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| input.prompt.clone())
-            .unwrap_or_default()
-    };
+    let source = summarize_source(input);
     if source.trim().is_empty() {
         return Ok(HookOutput::default());
     }
@@ -476,6 +466,66 @@ async fn summarize_handler(
         )
         .await?;
     Ok(HookOutput::default())
+}
+
+fn summarize_source(input: &NormalizedHookInput) -> String {
+    for path in transcript_candidates(input) {
+        let source = extract_last_transcript_message(&path.to_string_lossy(), "assistant", true)
+            .unwrap_or_default();
+        if !source.trim().is_empty() {
+            return source;
+        }
+    }
+    input
+        .tool_response
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| input.prompt.clone())
+        .unwrap_or_default()
+}
+
+fn transcript_candidates(input: &NormalizedHookInput) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = input
+        .transcript_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
+        paths.push(PathBuf::from(path));
+    }
+    if let (Some(session_id), Some(cwd)) = (input.session_id.as_deref(), input.cwd.as_deref()) {
+        let inferred = claude_transcript_path(cwd, session_id);
+        if !paths.iter().any(|path| path == &inferred) {
+            paths.push(inferred);
+        }
+    }
+    paths
+}
+
+fn claude_transcript_path(cwd: &str, session_id: &str) -> PathBuf {
+    claude_projects_dir()
+        .join(claude_project_dir_name(cwd))
+        .join(format!("{session_id}.jsonl"))
+}
+
+fn claude_projects_dir() -> PathBuf {
+    std::env::var_os("CLAUDE_MEM_CLAUDE_PROJECTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            claude_mem_core::shared::platform_paths::home_dir().join(".claude/projects")
+        })
+}
+
+fn claude_project_dir_name(cwd: &str) -> String {
+    let trimmed = cwd.trim_end_matches('/').trim_end_matches('\\');
+    if trimmed.is_empty() {
+        return "-".into();
+    }
+    trimmed
+        .chars()
+        .map(|ch| if ch == '/' || ch == '\\' { '-' } else { ch })
+        .collect()
 }
 
 async fn user_message_handler(
