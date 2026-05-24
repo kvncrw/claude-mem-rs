@@ -2343,10 +2343,7 @@ fn json_to_sql_value(value: &Value) -> rusqlite::types::Value {
 }
 
 fn claude_mem_home() -> PathBuf {
-    std::env::var_os("CLAUDE_MEM_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude-mem")))
-        .unwrap_or_else(|| PathBuf::from(".claude-mem"))
+    claude_mem_core::shared::platform_paths::claude_mem_home()
 }
 
 fn settings_path() -> PathBuf {
@@ -2644,9 +2641,9 @@ fn prompt_matches_options(
 
 fn vulcan_mcp_status() -> Value {
     let configured_path = std::env::var("CLAUDE_MEM_VULCAN_SDK_PATH").ok();
-    let default_path = std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join("firefly/vulcan-mcp-sdk-rust"));
+    let default_path = Some(
+        claude_mem_core::shared::platform_paths::home_dir().join("firefly/vulcan-mcp-sdk-rust"),
+    );
     let detected_path = configured_path
         .as_ref()
         .map(PathBuf::from)

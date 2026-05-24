@@ -22,10 +22,12 @@ pub fn project_name_from_cwd(cwd: &str) -> String {
 
 fn expand_tilde(input: &str) -> String {
     if input == "~" {
-        std::env::var("HOME").unwrap_or_else(|_| "~".into())
+        crate::shared::platform_paths::home_dir()
+            .to_string_lossy()
+            .into_owned()
     } else if let Some(rest) = input.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "".into());
-        format!("{}/{}", home, rest)
+        let home = crate::shared::platform_paths::home_dir();
+        format!("{}/{}", home.to_string_lossy(), rest)
     } else {
         input.to_string()
     }

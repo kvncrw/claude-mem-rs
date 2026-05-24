@@ -47,15 +47,7 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn pid_file_path() -> PathBuf {
-    if let Ok(home) = std::env::var("CLAUDE_MEM_HOME") {
-        return PathBuf::from(home).join("worker.pid");
-    }
-
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude-mem")
-        .join("worker.pid")
+    claude_mem_core::shared::platform_paths::worker_pid_path()
 }
 
 fn write_pid_file(port: u16) -> std::io::Result<()> {

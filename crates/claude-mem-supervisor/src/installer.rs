@@ -770,8 +770,18 @@ fn worker_env_json() -> Value {
 }
 
 fn reject_windows() -> Result<()> {
+    // Install/uninstall still bail on Windows for now (the integration
+    // surfaces — Claude plugin enable, hook command strings, opencode shim
+    // — assume POSIX path layouts and `sh` launchers). Library-level uses
+    // such as `detect_ides`, path resolution, and process liveness checks
+    // do compile and run; see README "Windows status" for the supported
+    // subset and follow-up issue #6.
     if cfg!(windows) {
-        Err(anyhow!("Windows is not supported by claude-mem-rs"))
+        Err(anyhow!(
+            "claude-mem-rs install/uninstall is not yet wired up for Windows. \
+             Library functions compile, but the IDE integrations still emit \
+             POSIX launcher scripts. Track Windows install support in #6."
+        ))
     } else {
         Ok(())
     }
@@ -797,12 +807,31 @@ fn stdin_is_tty() -> bool {
 }
 
 fn command_exists(command: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {command} >/dev/null 2>&1"))
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    #[cfg(windows)]
+    {
+        // `where` is the Windows equivalent of `command -v` for locating
+        // executables on PATH. Returns 0 on success, 1 when not found.
+        Command::new("where")
+            .arg(command)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {command} >/dev/null 2>&1"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 fn current_binary_path() -> PathBuf {
@@ -827,9 +856,7 @@ fn now_string() -> String {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    claude_mem_core::shared::platform_paths::home_dir()
 }
 
 fn claude_config_dir() -> PathBuf {

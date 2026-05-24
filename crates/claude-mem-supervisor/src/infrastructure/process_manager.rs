@@ -1,10 +1,10 @@
 //! PID file and process lifecycle helpers.
 //!
-//! Port of the Linux/Unix-relevant parts of
-//! `src/services/infrastructure/ProcessManager.ts`. This fork targets
-//! POSIX-like hosts only (Linux/macOS); Windows-specific WMIC and PowerShell
-//! behavior is intentionally not present.
+//! Port of `src/services/infrastructure/ProcessManager.ts`. Behaviour is
+//! shared across Unix and Windows hosts; platform-specific differences
+//! (signals/setsid vs. taskkill/detached creation flags) are gated below.
 
+use claude_mem_core::shared::platform_paths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,8 @@ use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const CHROMA_MIGRATION_MARKER_FILENAME: &str = ".chroma-cleaned-v10.3";
 
@@ -119,7 +121,8 @@ pub fn is_bun_executable_path(path: impl AsRef<str>) -> bool {
         .next()
         .unwrap_or(trimmed)
         .to_ascii_lowercase();
-    file_name == "bun"
+    // Accept the Windows shim variants used by `bun upgrade` and `where bun`.
+    matches!(file_name.as_str(), "bun" | "bun.exe" | "bun.cmd")
 }
 
 pub fn resolve_worker_runtime_path(options: RuntimeResolverOptions) -> Option<PathBuf> {
@@ -141,6 +144,16 @@ pub async fn force_kill_process(pid: i64) {
     #[cfg(unix)]
     {
         let _ = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -165,11 +178,41 @@ pub fn is_process_alive(pid: i64) -> bool {
         if rc == 0 {
             return true;
         }
-        return std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
-    #[cfg(not(unix))]
-    compile_error!("claude-mem-rs supervisor requires a POSIX-like target");
+    #[cfg(windows)]
+    {
+        is_process_alive_windows(pid)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(windows)]
+fn is_process_alive_windows(pid: i64) -> bool {
+    // `tasklist /FI "PID eq <pid>" /NH /FO CSV` prints the matching row when
+    // the process is running and an INFO: line when it is not. Shelling out
+    // avoids pulling a Windows FFI crate for this first compatibility pass.
+    let Ok(output) = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .any(|line| line.trim_start().starts_with('"'))
 }
 
 pub fn clean_stale_pid_file() -> CleanStalePidFileStatus {
@@ -274,6 +317,17 @@ pub fn spawn_daemon(
         });
     }
 
+    #[cfg(windows)]
+    {
+        // DETACHED_PROCESS (0x00000008) drops the console handle inheritance,
+        // CREATE_NEW_PROCESS_GROUP (0x00000200) gives the child its own
+        // process group so Ctrl-C from the supervisor terminal does not
+        // signal it. Together they match the intent of `setsid` on Unix.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+
     command.spawn().ok().map(|child| child.id())
 }
 
@@ -282,21 +336,81 @@ fn worker_daemon_args(executable_path: &Path) -> Vec<&'static str> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    if matches!(file_name, "claude-mem" | "claude-mem-rs") {
+    // Strip `.exe` on Windows so the multiplexed CLI name is recognised the
+    // same way as on Unix.
+    let normalised = file_name
+        .strip_suffix(".exe")
+        .or_else(|| file_name.strip_suffix(".EXE"))
+        .unwrap_or(file_name);
+    if matches!(normalised, "claude-mem" | "claude-mem-rs") {
         vec!["worker", "--daemon"]
     } else {
         vec!["--daemon"]
     }
 }
 
-fn default_pid_path() -> PathBuf {
-    if let Ok(p) = std::env::var("CLAUDE_MEM_HOME") {
-        return PathBuf::from(p).join("worker.pid");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_daemon_args_unix_multiplexed() {
+        assert_eq!(
+            worker_daemon_args(Path::new("/usr/local/bin/claude-mem")),
+            vec!["worker", "--daemon"]
+        );
+        assert_eq!(
+            worker_daemon_args(Path::new("/opt/claude-mem-rs")),
+            vec!["worker", "--daemon"]
+        );
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".claude-mem").join("worker.pid")
+
+    #[test]
+    fn worker_daemon_args_strips_exe_suffix() {
+        // `Path::file_name` does not treat `\` as a separator on Unix, so use
+        // forward-slash paths with `.exe`/`.EXE` suffixes to exercise the
+        // suffix-stripping branch on Linux CI.
+        assert_eq!(
+            worker_daemon_args(Path::new("/opt/claude-mem.exe")),
+            vec!["worker", "--daemon"]
+        );
+        assert_eq!(
+            worker_daemon_args(Path::new("/opt/claude-mem-rs.EXE")),
+            vec!["worker", "--daemon"]
+        );
+    }
+
+    #[test]
+    fn worker_daemon_args_dedicated_worker_binary() {
+        // Existing behaviour: a binary named anything else just gets `--daemon`.
+        assert_eq!(
+            worker_daemon_args(Path::new("/usr/local/bin/claude-mem-worker")),
+            vec!["--daemon"]
+        );
+        assert_eq!(
+            worker_daemon_args(Path::new("/opt/claude-mem-worker.exe")),
+            vec!["--daemon"]
+        );
+    }
+
+    #[test]
+    fn bun_path_matches_unix_and_windows_shims() {
+        assert!(is_bun_executable_path("/usr/local/bin/bun"));
+        assert!(is_bun_executable_path("/c/Users/me/.bun/bin/bun.exe"));
+        assert!(is_bun_executable_path("/c/bin/BUN.CMD"));
+        assert!(!is_bun_executable_path("/usr/local/bin/node"));
+        assert!(!is_bun_executable_path("/usr/local/bin/bunny"));
+    }
+
+    #[test]
+    fn dead_pid_zero_is_never_alive() {
+        assert!(!is_process_alive(0));
+        assert!(!is_process_alive(-1));
+    }
+}
+
+fn default_pid_path() -> PathBuf {
+    platform_paths::worker_pid_path()
 }
 
 fn parse_colon_triplet(value: &str) -> Option<(i64, i64, i64)> {

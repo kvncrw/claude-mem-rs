@@ -46,13 +46,7 @@ pub enum PidError {
 }
 
 fn default_pid_path() -> PathBuf {
-    // Honour CLAUDE_MEM_HOME (matching core::shared::paths::claude_mem_home)
-    // so tests + alternative install locations can isolate their PID files.
-    if let Ok(p) = std::env::var("CLAUDE_MEM_HOME") {
-        return PathBuf::from(p).join("worker.pid");
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".claude-mem").join("worker.pid")
+    claude_mem_core::shared::platform_paths::worker_pid_path()
 }
 
 pub fn write_pid_file(info: &PidInfo) -> Result<PathBuf, PidError> {
