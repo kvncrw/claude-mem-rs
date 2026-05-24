@@ -1,0 +1,7 @@
+# Test goldens compared byte-for-byte against runtime `\n`-line output via
+# `include_str!`. Without this, git's autocrlf on Windows munges them to
+# `\r\n` on checkout and the byte comparison fails — see
+# `crates/claude-mem-worker/tests/boot_context_golden.rs`.
+crates/**/tests/fixtures/*.md text eol=lf
+crates/**/tests/fixtures/*.txt text eol=lf
+crates/**/tests/fixtures/*.json text eol=lf
