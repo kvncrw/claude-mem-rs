@@ -48,6 +48,9 @@ Implemented in Rust:
 - Tier model selection for queued simple-tool and summary work.
 - Persistent SSE broadcaster for live observation, summary, session, queue, and manual-memory events.
 - Claude Stop/summarize transcript extraction with system-reminder stripping and session completion.
+- Rich browser UI for feed/search/timeline/context/admin/queue/logs/settings workflows.
+- POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, and Codex transcript setup.
+- Generic background transcript watcher daemon with schema config, offset state, tool pairing, summaries, and AGENTS context updates.
 
 Remaining:
 
@@ -55,8 +58,6 @@ Remaining:
 - Harden Claude CLI resume/session-id capture against real Claude CLI JSON/stream output variants.
 - Add real-provider smoke tests behind explicit env gates for Claude, Gemini, and OpenRouter.
 - Expand provider fallback telemetry and retry reporting in admin routes.
-- Richer browser UI beyond the lightweight built-in viewer.
-- Generic background transcript watcher/install flows for non-Claude editors.
 - Folder `CLAUDE.md` generation, cleanup, and file-context helper flows.
 
 ## Migration Principles

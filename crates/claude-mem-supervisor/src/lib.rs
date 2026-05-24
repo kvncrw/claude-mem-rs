@@ -2,4 +2,6 @@
 
 pub mod hooks;
 pub mod infrastructure;
+pub mod installer;
 pub mod supervisor;
+pub mod transcripts;

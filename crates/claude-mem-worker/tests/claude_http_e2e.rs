@@ -250,6 +250,10 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     let (status, html) = get_text(app.clone(), "/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("claude-mem-rs"));
+    assert!(html.contains("Save Manual Memory"));
+    assert!(html.contains("Process Pending Queue"));
+    assert!(html.contains("Context Preview"));
+    assert!(html.contains("EventSource('/stream')"));
 
     let (status, settings) = json_request(
         app.clone(),

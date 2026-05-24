@@ -9,6 +9,10 @@ description = "Process lifecycle, health checks, hook pipeline for claude-mem-rs
 name = "hook"
 path = "src/bin/hook.rs"
 
+[[bin]]
+name = "claude-mem"
+path = "src/bin/claude-mem.rs"
+
 [dependencies]
 claude-mem-core = { workspace = true }
 claude-mem-worker = { workspace = true }
@@ -16,6 +20,8 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+glob = { workspace = true }
+time = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 libc = { workspace = true }

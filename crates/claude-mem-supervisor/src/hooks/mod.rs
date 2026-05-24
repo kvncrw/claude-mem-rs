@@ -36,7 +36,7 @@ impl WorkerClient {
         &self.base_url
     }
 
-    async fn get_text(&self, path: &str) -> Result<Option<String>> {
+    pub async fn get_text(&self, path: &str) -> Result<Option<String>> {
         let url = format!("{}{}", self.base_url, path);
         let response = match self.client.get(url).send().await {
             Ok(response) => response,
@@ -48,7 +48,7 @@ impl WorkerClient {
         Ok(Some(response.text().await?))
     }
 
-    async fn post_json(&self, path: &str, body: Value) -> Result<Option<Value>> {
+    pub async fn post_json(&self, path: &str, body: Value) -> Result<Option<Value>> {
         let url = format!("{}{}", self.base_url, path);
         let response = match self.client.post(url).json(&body).send().await {
             Ok(response) => response,
@@ -60,7 +60,7 @@ impl WorkerClient {
         Ok(Some(response.json::<Value>().await?))
     }
 
-    async fn healthy(&self) -> bool {
+    pub async fn healthy(&self) -> bool {
         matches!(self.get_text("/api/health").await, Ok(Some(_)))
     }
 }
