@@ -708,7 +708,7 @@ fn add_column_if_missing(
 ) -> Result<()> {
     let exists: bool = conn
         .prepare(&format!("PRAGMA table_info({})", table))?
-        .query_map([], |row| Ok(row.get::<_, String>(1)?))?
+        .query_map([], |row| row.get::<_, String>(1))?
         .any(|n| n.as_deref() == Ok(column));
     if !exists {
         conn.execute(
@@ -722,7 +722,7 @@ fn add_column_if_missing(
 fn rename_column_if(conn: &Connection, table: &str, old_name: &str, new_name: &str) -> Result<()> {
     let has_old: bool = conn
         .prepare(&format!("PRAGMA table_info({})", table))?
-        .query_map([], |row| Ok(row.get::<_, String>(1)?))?
+        .query_map([], |row| row.get::<_, String>(1))?
         .any(|n| n.as_deref() == Ok(old_name));
     if has_old {
         conn.execute(

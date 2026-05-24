@@ -36,6 +36,7 @@ pub struct BatchStoreResult {
 /// `prompt_number`, `discovery_tokens`, and `created_at_epoch` are optional
 /// overrides applied to every row. When `created_at_epoch` is `None`, the
 /// current wall-clock is used (millisecond precision).
+#[allow(clippy::too_many_arguments)]
 pub fn store_batch(
     conn: &Connection,
     memory_session_id: &str,
@@ -111,6 +112,7 @@ pub fn store_batch(
 /// Same as [`store_batch`], but additionally marks `pending_message_id` as
 /// `processed` with `completed_at_epoch = epoch` inside the same transaction
 /// (port of `storeObservationsAndMarkComplete`).
+#[allow(clippy::too_many_arguments)]
 pub fn store_batch_and_mark_complete(
     conn: &Connection,
     memory_session_id: &str,

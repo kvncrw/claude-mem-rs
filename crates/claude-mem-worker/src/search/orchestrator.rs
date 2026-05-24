@@ -160,7 +160,6 @@ impl SearchOrchestrator {
                 Some("auto") => Some(SearchStrategyHint::Auto),
                 _ => None,
             },
-            ..Default::default()
         }
     }
 }

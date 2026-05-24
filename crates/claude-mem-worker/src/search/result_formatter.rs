@@ -51,7 +51,7 @@ impl ResultFormatter {
         }
 
         let mut combined = self.combine_results(results);
-        combined.sort_by(|a, b| b.epoch.cmp(&a.epoch));
+        combined.sort_by_key(|item| std::cmp::Reverse(item.epoch));
 
         let mut lines = Vec::new();
         lines.push(format!(
@@ -183,7 +183,7 @@ impl ResultFormatter {
                     data: CombinedData::Session(session),
                 }),
         );
-        combined.sort_by(|a, b| a.epoch.cmp(&b.epoch));
+        combined.sort_by_key(|item| item.epoch);
 
         let mut current_day = String::new();
         let mut current_file = String::new();

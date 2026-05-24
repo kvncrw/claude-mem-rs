@@ -373,13 +373,12 @@ fn walk_context_files(dir: &Path, target_file: &str, depth: usize, out: &mut Vec
             if !ignored_dir(&path) {
                 walk_context_files(&path, target_file, depth - 1, out);
             }
-        } else if path.file_name().and_then(|name| name.to_str()) == Some(target_file) {
-            if fs::read_to_string(&path)
+        } else if path.file_name().and_then(|name| name.to_str()) == Some(target_file)
+            && fs::read_to_string(&path)
                 .map(|content| content.contains(START_TAG))
                 .unwrap_or(false)
-            {
-                out.push(path);
-            }
+        {
+            out.push(path);
         }
     }
 }

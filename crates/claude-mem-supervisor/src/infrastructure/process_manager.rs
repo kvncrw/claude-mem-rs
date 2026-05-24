@@ -165,7 +165,7 @@ pub fn is_process_alive(pid: i64) -> bool {
         if rc == 0 {
             return true;
         }
-        return std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     #[cfg(not(unix))]
