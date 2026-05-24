@@ -62,6 +62,9 @@ async fn claude_hook_round_trip_creates_memory_and_injects_context() {
     assert!(hook_output
         .additional_context
         .contains("Dynatron thermal memories"));
+    let system_message = context.output.system_message.unwrap();
+    assert!(system_message.contains("Read tool use"));
+    assert!(system_message.contains("View Observations Live @"));
 
     let complete_input = json!({
         "session_id": "claude-hook-content-e2e",

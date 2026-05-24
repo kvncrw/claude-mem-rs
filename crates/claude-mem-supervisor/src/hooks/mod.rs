@@ -461,6 +461,13 @@ async fn user_message_handler(
 }
 
 fn context_output(event: &str, context: &str) -> HookOutput {
+    let system_message = (!context.trim().is_empty()).then(|| {
+        format!(
+            "{}\n\nView Observations Live @ {}",
+            context.trim(),
+            WorkerClient::from_env().base_url()
+        )
+    });
     HookOutput {
         r#continue: None,
         suppress_output: None,
@@ -468,7 +475,7 @@ fn context_output(event: &str, context: &str) -> HookOutput {
             hook_event_name: event.to_owned(),
             additional_context: context.to_owned(),
         }),
-        system_message: None,
+        system_message,
     }
 }
 
