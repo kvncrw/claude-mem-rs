@@ -66,24 +66,10 @@ pub fn validate_worker_pid_file<P: AsRef<Path>>(
         return ValidateWorkerPidStatus::Invalid("pid field is 0".into());
     }
 
-    // Liveness check: `kill(pid, 0)` returns 0 if process exists and
-    // the caller has permission; -1 with ESRCH means no such process.
-    #[cfg(unix)]
-    {
-        extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
-        }
-        // SAFETY: `kill(pid, 0)` is the standard POSIX liveness probe;
-        // never delivers a signal, just checks reachability.
-        let ret = unsafe { kill(parsed.pid as i32, 0) };
-        if ret != 0 {
-            return ValidateWorkerPidStatus::Stale;
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        // On non-Unix (Windows target), fall back to "assume alive".
-        // The TS side does the same with `spawnSync('tasklist')`.
+    // Liveness check delegates to the cross-platform helper:
+    // POSIX uses `kill(pid, 0)`; Windows shells out to `tasklist`.
+    if !crate::infrastructure::process_manager::is_process_alive(parsed.pid as i64) {
+        return ValidateWorkerPidStatus::Stale;
     }
 
     ValidateWorkerPidStatus::Alive {
