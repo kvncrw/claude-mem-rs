@@ -1,4 +1,11 @@
-//! POSIX installer UX for the Rust runtime.
+//! Cross-platform installer UX for the Rust runtime.
+//!
+//! Unix and macOS get POSIX `sh` launcher scripts; Windows gets `.cmd`
+//! batch shims. All path resolution flows through
+//! `claude_mem_core::shared::platform_paths` so that `USERPROFILE`,
+//! `HOMEDRIVE`+`HOMEPATH`, `HOME`, and the env-var overrides
+//! (`CLAUDE_MEM_HOME`, `CLAUDE_MEM_DATA_DIR`, `CLAUDE_CONFIG_DIR`) are
+//! resolved identically across the runtime.
 
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
@@ -45,7 +52,6 @@ pub struct InstallReport {
 }
 
 pub fn run_install(options: InstallOptions) -> Result<InstallReport> {
-    reject_windows()?;
     let version = env!("CARGO_PKG_VERSION").to_owned();
     let selected_ides = select_ides(options.ide.as_deref(), options.yes)?;
     let bin_path = options.bin_path.unwrap_or_else(current_binary_path);
@@ -70,7 +76,6 @@ pub fn run_install(options: InstallOptions) -> Result<InstallReport> {
 }
 
 pub fn run_uninstall(options: UninstallOptions) -> Result<InstallReport> {
-    reject_windows()?;
     if !options.yes && stdin_is_tty() && !confirm("Uninstall claude-mem runtime integrations?")? {
         return Err(anyhow!("uninstall cancelled"));
     }
@@ -235,9 +240,9 @@ fn register_claude_plugin(
     actions: &mut Vec<String>,
 ) -> Result<()> {
     let plugin_dir = claude_marketplace_dir().join("plugin");
-    let plugin_json = plugin_dir.join(".claude-plugin/plugin.json");
+    let plugin_json = plugin_dir.join(".claude-plugin").join("plugin.json");
     let scripts_dir = plugin_dir.join("scripts");
-    let launcher = scripts_dir.join("claude-mem");
+    let launcher = scripts_dir.join(plugin_launcher_filename());
     if !dry_run {
         fs::create_dir_all(plugin_json.parent().unwrap())?;
         fs::create_dir_all(&scripts_dir)?;
@@ -250,13 +255,7 @@ fn register_claude_plugin(
                 "author": "kvncrw"
             }),
         )?;
-        fs::write(
-            &launcher,
-            format!(
-                "#!/usr/bin/env sh\nexec \"{}\" \"$@\"\n",
-                bin_path.display()
-            ),
-        )?;
+        fs::write(&launcher, plugin_launcher_contents(bin_path))?;
         set_executable(&launcher)?;
         register_marketplace(version)?;
         register_installed_plugin(version, &plugin_dir)?;
@@ -274,7 +273,10 @@ fn write_claude_hook_manifest(
     dry_run: bool,
     actions: &mut Vec<String>,
 ) -> Result<()> {
-    let path = claude_marketplace_dir().join("plugin/hooks/hooks.json");
+    let path = claude_marketplace_dir()
+        .join("plugin")
+        .join("hooks")
+        .join("hooks.json");
     let command = format!("\"{}\" hook claude-code", bin_path.display());
     let manifest = json!({
         "description": "claude-mem-rs memory system hooks",
@@ -308,8 +310,7 @@ fn write_claude_hook_manifest(
 fn write_claude_settings(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
     let path = claude_config_dir().join("settings.json");
     let mut settings = read_json_or_empty(&path);
-    settings["env"]["CLAUDE_MEM_HOME"] = json!(std::env::var("CLAUDE_MEM_HOME")
-        .unwrap_or_else(|_| { home_dir().join(".claude-mem").display().to_string() }));
+    settings["env"]["CLAUDE_MEM_HOME"] = json!(claude_mem_home_string());
     settings["env"]["CLAUDE_MEM_WORKER_URL"] = json!(std::env::var("CLAUDE_MEM_WORKER_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:37777".to_owned()));
 
@@ -758,32 +759,56 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
 
 fn worker_env_json() -> Value {
     let mut env = BTreeMap::new();
-    env.insert(
-        "CLAUDE_MEM_HOME",
-        std::env::var("CLAUDE_MEM_HOME")
-            .unwrap_or_else(|_| home_dir().join(".claude-mem").display().to_string()),
-    );
+    env.insert("CLAUDE_MEM_HOME", claude_mem_home_string());
+    if let Ok(value) = std::env::var("CLAUDE_MEM_DATA_DIR") {
+        env.insert("CLAUDE_MEM_DATA_DIR", value);
+    }
     if let Ok(value) = std::env::var("CLAUDE_MEM_WORKER_URL") {
         env.insert("CLAUDE_MEM_WORKER_URL", value);
     }
     json!(env)
 }
 
-fn reject_windows() -> Result<()> {
-    // Install/uninstall still bail on Windows for now (the integration
-    // surfaces — Claude plugin enable, hook command strings, opencode shim
-    // — assume POSIX path layouts and `sh` launchers). Library-level uses
-    // such as `detect_ides`, path resolution, and process liveness checks
-    // do compile and run; see README "Windows status" for the supported
-    // subset and follow-up issue #6.
-    if cfg!(windows) {
-        Err(anyhow!(
-            "claude-mem-rs install/uninstall is not yet wired up for Windows. \
-             Library functions compile, but the IDE integrations still emit \
-             POSIX launcher scripts. Track Windows install support in #6."
-        ))
-    } else {
-        Ok(())
+/// Returns the canonical `CLAUDE_MEM_HOME` directory as a display string,
+/// routing through `platform_paths` so Windows resolves `USERPROFILE`
+/// (or `HOMEDRIVE`+`HOMEPATH`) the same way as the rest of the runtime.
+fn claude_mem_home_string() -> String {
+    claude_mem_core::shared::platform_paths::claude_mem_home()
+        .display()
+        .to_string()
+}
+
+/// Filename of the plugin launcher that Claude Code spawns. POSIX uses a
+/// bare `sh` script; Windows uses a `.cmd` batch shim so the shell can
+/// invoke it directly.
+fn plugin_launcher_filename() -> &'static str {
+    #[cfg(windows)]
+    {
+        "claude-mem.cmd"
+    }
+    #[cfg(not(windows))]
+    {
+        "claude-mem"
+    }
+}
+
+/// Body of the plugin launcher. Matches the convention used by
+/// `plugin/scripts/smart-install.js` in the TypeScript v12 plugin:
+/// emit a POSIX `sh` exec on Unix and a `@echo off` cmd shim on Windows.
+fn plugin_launcher_contents(bin_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        // CRLF line endings keep `cmd.exe` happy across older Windows
+        // hosts, and `%*` forwards every argument verbatim including
+        // quoted strings.
+        format!("@echo off\r\n\"{}\" %*\r\n", bin_path.display())
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/usr/bin/env sh\nexec \"{}\" \"$@\"\n",
+            bin_path.display()
+        )
     }
 }
 
@@ -860,9 +885,7 @@ fn home_dir() -> PathBuf {
 }
 
 fn claude_config_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".claude"))
+    claude_mem_core::shared::platform_paths::claude_config_dir()
 }
 
 fn claude_plugins_dir() -> PathBuf {
@@ -878,35 +901,164 @@ fn claude_marketplace_dir() -> PathBuf {
 fn cursor_mcp_path() -> PathBuf {
     std::env::var_os("CURSOR_MCP_CONFIG")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".cursor/mcp.json"))
+        .unwrap_or_else(|| home_dir().join(".cursor").join("mcp.json"))
 }
 
 fn gemini_settings_path() -> PathBuf {
     std::env::var_os("GEMINI_SETTINGS_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".gemini/settings.json"))
+        .unwrap_or_else(|| home_dir().join(".gemini").join("settings.json"))
 }
 
 fn codex_agents_path() -> PathBuf {
     std::env::var_os("CODEX_AGENTS_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".codex/AGENTS.md"))
+        .unwrap_or_else(|| home_dir().join(".codex").join("AGENTS.md"))
 }
 
 fn opencode_config_path() -> PathBuf {
     std::env::var_os("OPENCODE_CONFIG_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".config/opencode/opencode.json"))
+        .unwrap_or_else(|| {
+            home_dir()
+                .join(".config")
+                .join("opencode")
+                .join("opencode.json")
+        })
 }
 
 fn opencode_plugin_path() -> PathBuf {
     std::env::var_os("OPENCODE_PLUGIN_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".config/opencode/claude-mem-rs-plugin.mjs"))
+        .unwrap_or_else(|| {
+            home_dir()
+                .join(".config")
+                .join("opencode")
+                .join("claude-mem-rs-plugin.mjs")
+        })
 }
 
 fn transcript_config_path() -> PathBuf {
     std::env::var_os("CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".claude-mem/transcript-watch.json"))
+        .unwrap_or_else(claude_mem_core::shared::platform_paths::transcript_config_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_launcher_emits_posix_shebang() {
+        let bin = PathBuf::from("/usr/local/bin/claude-mem");
+        let contents = plugin_launcher_contents(&bin);
+        assert!(
+            contents.starts_with("#!/usr/bin/env sh\n"),
+            "unix launcher must start with sh shebang, got: {contents}"
+        );
+        assert!(contents.contains("exec \"/usr/local/bin/claude-mem\" \"$@\""));
+        assert_eq!(plugin_launcher_filename(), "claude-mem");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launcher_emits_cmd_batch() {
+        let bin = PathBuf::from(r"C:\Users\Me\.cargo\bin\claude-mem.exe");
+        let contents = plugin_launcher_contents(&bin);
+        // `cmd.exe` requires `@echo off` to suppress command echoing and
+        // CRLF line endings for legacy compatibility.
+        assert!(
+            contents.starts_with("@echo off\r\n"),
+            "windows launcher must start with @echo off + CRLF, got: {contents:?}"
+        );
+        // `%*` forwards every argument including quoted strings verbatim.
+        assert!(
+            contents.contains(r#""C:\Users\Me\.cargo\bin\claude-mem.exe" %*"#),
+            "expected forwarded invocation, got: {contents:?}"
+        );
+        assert!(
+            contents.ends_with("\r\n"),
+            "windows launcher must end with CRLF, got: {contents:?}"
+        );
+        assert_eq!(plugin_launcher_filename(), "claude-mem.cmd");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_resolves_via_userprofile() {
+        // platform_paths::home_dir() must round-trip USERPROFILE; if a
+        // future refactor breaks that contract we want a Windows runner
+        // to scream.
+        let env_home =
+            std::env::var_os("USERPROFILE").expect("USERPROFILE must be set on Windows test hosts");
+        let resolved = home_dir();
+        assert_eq!(resolved, PathBuf::from(env_home));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_use_backslash_separators() {
+        // .join() on Windows produces backslashes; the explicit
+        // multi-segment joins for cursor/gemini/codex/opencode must not
+        // accidentally embed forward slashes that would confuse the
+        // Windows shell when expanded.
+        let cursor = cursor_mcp_path();
+        let s = cursor.display().to_string();
+        assert!(
+            s.contains(r"\.cursor\mcp.json"),
+            "expected backslash-separated .cursor path, got: {s}"
+        );
+
+        let gemini = gemini_settings_path();
+        assert!(
+            gemini
+                .display()
+                .to_string()
+                .contains(r"\.gemini\settings.json"),
+            "expected backslash-separated .gemini path"
+        );
+
+        let codex = codex_agents_path();
+        assert!(
+            codex.display().to_string().contains(r"\.codex\AGENTS.md"),
+            "expected backslash-separated .codex path"
+        );
+
+        let opencode = opencode_config_path();
+        assert!(
+            opencode
+                .display()
+                .to_string()
+                .contains(r"\.config\opencode\opencode.json"),
+            "expected backslash-separated opencode config path"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_claude_mem_home_routes_through_platform_paths() {
+        // The string emitted into Claude settings / worker env must
+        // match what platform_paths resolves, so the worker and the
+        // plugin agree on where state lives.
+        let from_helper = claude_mem_home_string();
+        let from_pp = claude_mem_core::shared::platform_paths::claude_mem_home()
+            .display()
+            .to_string();
+        assert_eq!(from_helper, from_pp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bun_detection_accepts_cmd_shim() {
+        // The installer doesn't currently shell out to bun, but any
+        // future detection must agree with the supervisor's
+        // process_manager helper. Pinning the contract here so a
+        // regression on either side is caught on the Windows runner.
+        use crate::infrastructure::process_manager::is_bun_executable_path;
+        assert!(is_bun_executable_path(r"C:\Users\Me\.bun\bin\bun.exe"));
+        assert!(is_bun_executable_path(r"C:\Users\Me\.bun\bin\bun.cmd"));
+        assert!(is_bun_executable_path(r"C:\Users\Me\.bun\bin\BUN.CMD"));
+        assert!(!is_bun_executable_path(r"C:\Users\Me\.bun\bin\node.exe"));
+    }
 }

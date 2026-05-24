@@ -148,13 +148,88 @@ pub async fn force_kill_process(pid: i64) {
 
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
+        let _ = build_taskkill_command(pid, TaskkillMode::Kill)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     }
+}
+
+/// Send a graceful termination request to `pid`.
+///
+/// On Unix this delivers `SIGTERM`. On Windows this issues
+/// `taskkill /PID <pid> /T` (no `/F`, so console processes receive
+/// `WM_CLOSE`/`CTRL_BREAK` and may run shutdown handlers).
+pub async fn terminate_process(pid: i64) {
+    if pid <= 0 || pid > i64::from(i32::MAX) {
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        let _ = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = build_taskkill_command(pid, TaskkillMode::Term)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// Try a graceful terminate, poll for exit, then force-kill if the process is
+/// still alive after `grace`.
+pub async fn graceful_kill(pid: i64, grace: Duration) {
+    if pid <= 0 || pid > i64::from(i32::MAX) {
+        return;
+    }
+    if !is_process_alive(pid) {
+        return;
+    }
+    terminate_process(pid).await;
+
+    let deadline = tokio::time::Instant::now() + grace;
+    while tokio::time::Instant::now() < deadline {
+        if !is_process_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if is_process_alive(pid) {
+        force_kill_process(pid).await;
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskkillMode {
+    /// Graceful: `/T` (tree) without `/F` — sends `WM_CLOSE`/`CTRL_BREAK`.
+    Term,
+    /// Forced: `/F /T` — kill the process tree immediately.
+    Kill,
+}
+
+#[cfg(windows)]
+fn taskkill_args(pid: i64, mode: TaskkillMode) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if mode == TaskkillMode::Kill {
+        args.push("/F".to_owned());
+    }
+    args.push("/T".to_owned());
+    args.push("/PID".to_owned());
+    args.push(pid.to_string());
+    args
+}
+
+#[cfg(windows)]
+fn build_taskkill_command(pid: i64, mode: TaskkillMode) -> Command {
+    let mut command = Command::new("taskkill");
+    command.args(taskkill_args(pid, mode));
+    command
 }
 
 pub async fn wait_for_processes_exit(pids: &[i64], timeout: Duration) {
@@ -406,6 +481,21 @@ mod tests {
     fn dead_pid_zero_is_never_alive() {
         assert!(!is_process_alive(0));
         assert!(!is_process_alive(-1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn taskkill_term_uses_tree_without_force() {
+        let args = super::taskkill_args(1234, super::TaskkillMode::Term);
+        assert_eq!(args, vec!["/T", "/PID", "1234"]);
+        assert!(!args.iter().any(|a| a == "/F"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn taskkill_kill_uses_force_and_tree() {
+        let args = super::taskkill_args(1234, super::TaskkillMode::Kill);
+        assert_eq!(args, vec!["/F", "/T", "/PID", "1234"]);
     }
 }
 
