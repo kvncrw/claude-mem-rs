@@ -47,6 +47,7 @@ Implemented in Rust:
 - Claude CLI, Gemini REST, OpenRouter REST, fake, and deterministic local observer providers.
 - Tier model selection for queued simple-tool and summary work.
 - Persistent SSE broadcaster for live observation, summary, session, queue, and manual-memory events.
+- Claude Stop/summarize transcript extraction with system-reminder stripping and session completion.
 
 Remaining:
 
@@ -54,7 +55,7 @@ Remaining:
 - Add real-provider smoke tests behind explicit env gates for Claude, Gemini, and OpenRouter.
 - Expand provider fallback telemetry and retry reporting in admin routes.
 - Richer browser UI beyond the lightweight built-in viewer.
-- Deeper transcript watcher/install flows for non-Claude editors.
+- Generic background transcript watcher/install flows for non-Claude editors.
 - Folder `CLAUDE.md` generation, cleanup, and file-context helper flows.
 
 ## Migration Principles

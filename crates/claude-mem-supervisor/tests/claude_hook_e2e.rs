@@ -190,3 +190,72 @@ async fn cursor_gemini_and_codex_adapters_create_searchable_memory() {
 
     let _ = shutdown.send(());
 }
+
+#[tokio::test]
+async fn claude_summarize_hook_reads_transcript_and_completes_session() {
+    let (worker, shutdown) = spawn_worker().await;
+    let transcript_dir = tempfile::TempDir::new().unwrap();
+    let transcript_path = transcript_dir.path().join("session.jsonl");
+    std::fs::write(
+        &transcript_path,
+        r#"{"type":"user","message":{"content":"Summarize transcript memory."}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Transcript summary should mention lower wattage instead of fan speed.\n<system-reminder>hidden reminder</system-reminder>"}]}}
+"#,
+    )
+    .unwrap();
+
+    let init = execute_hook(
+        "claude-code",
+        "session-init",
+        json!({
+            "session_id": "claude-transcript-summary-e2e",
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "prompt": "Remember transcript summarize hook parity."
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(init.exit_code, 0);
+
+    let summarize = execute_hook(
+        "claude-code",
+        "summarize",
+        json!({
+            "session_id": "claude-transcript-summary-e2e",
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "transcript_path": transcript_path.display().to_string()
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summarize.exit_code, 0);
+
+    let status: serde_json::Value = reqwest::get(format!(
+        "{}/api/sessions/status?contentSessionId=claude-transcript-summary-e2e",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(status["hasSummary"], true);
+    assert_eq!(status["queueLength"], 0);
+    assert_eq!(status["session"]["status"], "completed");
+
+    let search: serde_json::Value = reqwest::get(format!(
+        "{}/api/search?query=lower%20wattage&project=cloudy-fork&limit=10",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(search["count"].as_i64().unwrap() >= 1);
+    assert!(!search.to_string().contains("hidden reminder"));
+
+    let _ = shutdown.send(());
+}

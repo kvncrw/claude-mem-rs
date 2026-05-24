@@ -32,6 +32,10 @@ impl WorkerClient {
         Self::new(format!("http://{}:{}", host, port))
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     async fn get_text(&self, path: &str) -> Result<Option<String>> {
         let url = format!("{}{}", self.base_url, path);
         let response = match self.client.get(url).send().await {
@@ -416,19 +420,33 @@ async fn summarize_handler(
     let Some(session_id) = input.session_id.as_deref() else {
         return Ok(HookOutput::default());
     };
-    let source = input
-        .tool_response
-        .as_ref()
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| input.prompt.clone());
+    let source = if let Some(transcript_path) = input.transcript_path.as_deref() {
+        extract_last_transcript_message(transcript_path, "assistant", true).unwrap_or_default()
+    } else {
+        input
+            .tool_response
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| input.prompt.clone())
+            .unwrap_or_default()
+    };
+    if source.trim().is_empty() {
+        return Ok(HookOutput::default());
+    }
     let _ = worker
         .post_json(
             "/api/sessions/summarize",
             json!({
                 "contentSessionId": session_id,
-                "summary": source,
+                "lastAssistantMessage": source,
             }),
+        )
+        .await?;
+    let _ = worker
+        .post_json(
+            "/api/sessions/complete",
+            json!({ "contentSessionId": session_id, "platformSource": platform_source(&input.platform) }),
         )
         .await?;
     Ok(HookOutput::default())
@@ -535,4 +553,91 @@ fn strip_ansi(input: &str) -> String {
         }
     }
     output
+}
+
+fn extract_last_transcript_message(
+    transcript_path: &str,
+    role: &str,
+    strip_system_reminders: bool,
+) -> Result<String> {
+    let content = match std::fs::read_to_string(transcript_path) {
+        Ok(content) => content,
+        Err(_) => return Ok(String::new()),
+    };
+    for line in content.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: Value = serde_json::from_str(trimmed)
+            .with_context(|| format!("failed to parse transcript line in {transcript_path}"))?;
+        if parsed.get("type").and_then(Value::as_str) != Some(role) {
+            continue;
+        }
+        let Some(message_content) = parsed
+            .get("message")
+            .and_then(|message| message.get("content"))
+        else {
+            continue;
+        };
+        let mut text = if let Some(text) = message_content.as_str() {
+            text.to_owned()
+        } else if let Some(parts) = message_content.as_array() {
+            parts
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            return Err(anyhow!(
+                "unknown message content format in transcript: {}",
+                message_content
+            ));
+        };
+        if strip_system_reminders {
+            text = strip_system_reminders_from_text(&text);
+        }
+        return Ok(text);
+    }
+    Ok(String::new())
+}
+
+fn strip_system_reminders_from_text(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut rest = input;
+    loop {
+        let Some(start) = rest.find("<system-reminder>") else {
+            output.push_str(rest);
+            break;
+        };
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + "<system-reminder>".len()..];
+        if let Some(end) = after_start.find("</system-reminder>") {
+            rest = &after_start[end + "</system-reminder>".len()..];
+        } else {
+            break;
+        }
+    }
+    collapse_blank_lines(output.trim())
+}
+
+fn collapse_blank_lines(input: &str) -> String {
+    let mut output = String::new();
+    let mut blank_count = 0usize;
+    for line in input.lines() {
+        if line.trim().is_empty() {
+            blank_count += 1;
+            if blank_count <= 1 {
+                output.push('\n');
+            }
+        } else {
+            blank_count = 0;
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(line);
+        }
+    }
+    output.trim().to_owned()
 }

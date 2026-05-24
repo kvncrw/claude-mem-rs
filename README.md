@@ -38,10 +38,11 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - local/fake deterministic observer runners plus Claude CLI, Gemini REST, and OpenRouter REST provider runners
 - tier model selection metadata for queued simple-tool and summary work
 - browser viewer shell with live SSE events for session, observation, summary, queue, and manual-memory lifecycle changes
+- Claude Stop/summarize transcript JSONL extraction for summary generation, with system-reminder stripping and completion cleanup
 
 Queued observation and summary routes now drain through the Rust observer processor. The default provider is `local`, which deterministically converts hook payloads into recallable XML-backed memory without external credentials. Set `CLAUDE_MEM_PROVIDER=claude`, `gemini`, `openrouter`, or `fake` to use the corresponding runner.
 
-The remaining TypeScript-only surfaces include installer UX, transcript watcher integrations, rich browser UI behavior, and folder `CLAUDE.md` regeneration/cleanup flows.
+The remaining TypeScript-only surfaces include installer UX, the generic background transcript watcher daemon, rich browser UI behavior, and folder `CLAUDE.md` regeneration/cleanup flows.
 
 ## Build And Test
 

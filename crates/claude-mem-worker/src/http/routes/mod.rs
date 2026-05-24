@@ -683,9 +683,11 @@ pub async fn sessions_status(
     } else {
         Vec::new()
     };
+    let queue_length = count_pending_for_session(&conn, session.id)?;
     Ok(Json(json!({
         "exists": true,
         "session": session,
+        "queueLength": queue_length,
         "summaryCount": summaries.len(),
         "hasSummary": !summaries.is_empty()
     })))
