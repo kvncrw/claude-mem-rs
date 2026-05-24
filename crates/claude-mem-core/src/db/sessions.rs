@@ -12,7 +12,10 @@ use crate::types::session::{CreateSessionInput, SdkSessionRow};
 
 /// Idempotent session create (port of `createSDKSession`).
 /// `INSERT OR IGNORE` so repeat calls don't churn the rowid.
-pub fn create_session(conn: &Connection, input: &CreateSessionInput) -> Result<CreateSessionOutcome> {
+pub fn create_session(
+    conn: &Connection,
+    input: &CreateSessionInput,
+) -> Result<CreateSessionOutcome> {
     conn.execute(
         "INSERT OR IGNORE INTO sdk_sessions
             (content_session_id, project, user_prompt, started_at, started_at_epoch, status)
@@ -60,7 +63,9 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<SdkSessionRow> {
         prompt_counter: row.get(11)?,
         custom_title: row.get(12)?,
         // Fall back to 'claude' for older rows written before migration 25.
-        platform_source: row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "claude".into()),
+        platform_source: row
+            .get::<_, Option<String>>(13)?
+            .unwrap_or_else(|| "claude".into()),
     })
 }
 
@@ -69,7 +74,10 @@ pub fn get_session_by_content_id(
     content_session_id: &str,
 ) -> Result<Option<SdkSessionRow>> {
     conn.query_row(
-        &format!("SELECT {cols} FROM sdk_sessions WHERE content_session_id = ?", cols = SELECT_COLS),
+        &format!(
+            "SELECT {cols} FROM sdk_sessions WHERE content_session_id = ?",
+            cols = SELECT_COLS
+        ),
         params![content_session_id],
         row_from,
     )
@@ -81,7 +89,10 @@ pub fn get_session_by_memory_id(
     memory_session_id: &str,
 ) -> Result<Option<SdkSessionRow>> {
     conn.query_row(
-        &format!("SELECT {cols} FROM sdk_sessions WHERE memory_session_id = ?", cols = SELECT_COLS),
+        &format!(
+            "SELECT {cols} FROM sdk_sessions WHERE memory_session_id = ?",
+            cols = SELECT_COLS
+        ),
         params![memory_session_id],
         row_from,
     )

@@ -29,13 +29,15 @@ pub fn find_duplicate_observation(
     match obs.content_hash.as_ref() {
         None => Ok(None),
         Some(hash) => {
-            let id: Option<i64> = conn.query_row(
-                "SELECT id FROM observations
+            let id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM observations
                  WHERE memory_session_id = ? AND content_hash = ?
                  LIMIT 1",
-                params![obs.memory_session_id, hash],
-                |r| r.get(0),
-            ).optional()?;
+                    params![obs.memory_session_id, hash],
+                    |r| r.get(0),
+                )
+                .optional()?;
             Ok(id)
         }
     }

@@ -85,10 +85,8 @@ fn completed_at_is_valid_iso_timestamp() {
         .unwrap();
     let completed = row.completed_at.expect("should be set");
     // Time crate should parse it as RFC3339.
-    let parsed = time::OffsetDateTime::parse(
-        &completed,
-        &time::format_description::well_known::Rfc3339,
-    );
+    let parsed =
+        time::OffsetDateTime::parse(&completed, &time::format_description::well_known::Rfc3339);
     assert!(
         parsed.is_ok(),
         "completed_at {completed} is not a valid RFC3339 timestamp: {:?}",

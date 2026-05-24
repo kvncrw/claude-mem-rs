@@ -1,9 +1,9 @@
 //! Summaries module tests (port of
 //! `tests/sqlite/summaries.test.ts`).
 
-use claude_mem_core::db::summaries::{store_summary, get_summary_for_session, SummaryInput};
-use claude_mem_core::db::sessions;
 use claude_mem_core::db::open_in_memory;
+use claude_mem_core::db::sessions;
+use claude_mem_core::db::summaries::{get_summary_for_session, store_summary, SummaryInput};
 use claude_mem_core::types::session::CreateSessionInput;
 
 fn base_input() -> SummaryInput {
@@ -56,7 +56,8 @@ fn fill(input: SummaryInput, memory_session_id: &str, project: &str) -> SummaryI
 #[test]
 fn store_returns_positive_id_and_epoch() {
     let conn = open_in_memory().unwrap();
-    let mem = create_session_with_memory_id(&conn, "content-sum-123", "mem-sum-123", "test-project");
+    let mem =
+        create_session_with_memory_id(&conn, "content-sum-123", "mem-sum-123", "test-project");
     let id = store_summary(&conn, &fill(base_input(), &mem, "test-project")).unwrap();
     assert!(id > 0);
 }
@@ -64,7 +65,8 @@ fn store_returns_positive_id_and_epoch() {
 #[test]
 fn store_persists_all_fields() {
     let conn = open_in_memory().unwrap();
-    let mem = create_session_with_memory_id(&conn, "content-sum-456", "mem-sum-456", "test-project");
+    let mem =
+        create_session_with_memory_id(&conn, "content-sum-456", "mem-sum-456", "test-project");
     let mut input = base_input();
     input.request = Some("Refactor the database layer".into());
     input.investigated = Some("Analyzed current schema".into());
@@ -79,8 +81,14 @@ fn store_persists_all_fields() {
 
     let rows = get_summary_for_session(&conn, &mem).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].request.as_deref(), Some("Refactor the database layer"));
-    assert_eq!(rows[0].investigated.as_deref(), Some("Analyzed current schema"));
+    assert_eq!(
+        rows[0].request.as_deref(),
+        Some("Refactor the database layer")
+    );
+    assert_eq!(
+        rows[0].investigated.as_deref(),
+        Some("Analyzed current schema")
+    );
     assert_eq!(rows[0].learned.as_deref(), Some("Found N+1 query issues"));
     assert_eq!(rows[0].completed.as_deref(), Some("Optimized queries"));
     assert_eq!(rows[0].next_steps.as_deref(), Some("Monitor performance"));
@@ -91,7 +99,8 @@ fn store_persists_all_fields() {
 #[test]
 fn override_timestamp_epoch_honours_caller() {
     let conn = open_in_memory().unwrap();
-    let mem = create_session_with_memory_id(&conn, "content-sum-789", "mem-sum-789", "test-project");
+    let mem =
+        create_session_with_memory_id(&conn, "content-sum-789", "mem-sum-789", "test-project");
     let past = 1_650_000_000_000i64;
     let mut input = base_input();
     input.created_at_epoch = past;

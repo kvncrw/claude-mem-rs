@@ -147,10 +147,7 @@ impl PendingMessageStore {
 
     /// Mark message as successfully processed; deletes the row.
     pub fn confirm_processed(&self, conn: &Connection, id: i64) -> Result<()> {
-        conn.execute(
-            "DELETE FROM pending_messages WHERE id = ?1",
-            params![id],
-        )?;
+        conn.execute("DELETE FROM pending_messages WHERE id = ?1", params![id])?;
         Ok(())
     }
 

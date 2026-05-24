@@ -10,4 +10,5 @@ pub mod prompts;
 pub use parser::{parse_observations, parse_summary, ParsedObservation, ParsedSummary};
 pub use prompts::{
     build_continuation_prompt, build_init_prompt, build_observation_prompt, build_summary_prompt,
+    ObservationPromptInput, SummaryPromptInput,
 };

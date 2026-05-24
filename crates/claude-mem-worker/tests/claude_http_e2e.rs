@@ -1,8 +1,15 @@
-use axum::body::{Body, to_bytes};
+use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
-use claude_mem_worker::http::router::{AppState, build_router_with_state};
-use serde_json::{Value, json};
-use std::sync::Mutex;
+use claude_mem_core::db::observations::get::get_observation_by_id;
+use claude_mem_core::db::pending_messages::{EnqueueInput, PendingMessageStore};
+use claude_mem_core::db::sessions::get_session_by_content_id;
+use claude_mem_worker::agents::observer::{
+    process_pending_for_session, ObserverConfig, QueueProcessStats,
+};
+use claude_mem_worker::http::router::{build_router_with_state, AppState};
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use tokio::time::{timeout, Duration};
 use tower::ServiceExt;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -51,6 +58,22 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
         .oneshot(
             Request::builder()
                 .method(Method::GET)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+async fn delete_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
                 .uri(uri)
                 .body(Body::empty())
                 .unwrap(),
@@ -130,12 +153,10 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        formatted_search["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Dynatron power cap")
-    );
+    assert!(formatted_search["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Dynatron power cap"));
 
     let (status, timeline) = get_json(
         app.clone(),
@@ -162,13 +183,11 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(by_type["count"], 2);
-    assert!(
-        by_type["observations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["title"] == "Read tool use")
-    );
+    assert!(by_type["observations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["title"] == "Read tool use"));
 
     let (status, by_file) = get_json(
         app.clone(),
@@ -193,12 +212,10 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(semantic["count"], 2);
-    assert!(
-        semantic["context"]
-            .as_str()
-            .unwrap()
-            .contains("Dynatron power cap")
-    );
+    assert!(semantic["context"]
+        .as_str()
+        .unwrap()
+        .contains("Dynatron power cap"));
 
     let (status, context) = get_text(app.clone(), "/api/context/inject?project=cloudy-fork").await;
     assert_eq!(status, StatusCode::OK);
@@ -233,10 +250,6 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     let (status, html) = get_text(app.clone(), "/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("claude-mem-rs"));
-
-    let (status, stream) = get_text(app.clone(), "/stream").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(stream.contains("event: initial_load"));
 
     let (status, settings) = json_request(
         app.clone(),
@@ -273,12 +286,10 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    assert!(
-        blocked_switch["error"]
-            .as_str()
-            .unwrap()
-            .contains("CLAUDE_MEM_ALLOW_BRANCH_MUTATION")
-    );
+    assert!(blocked_switch["error"]
+        .as_str()
+        .unwrap()
+        .contains("CLAUDE_MEM_ALLOW_BRANCH_MUTATION"));
 
     let (status, _) = json_request(
         app.clone(),
@@ -379,4 +390,366 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     assert_eq!(imported_stats["observations"], 1);
 
     std::env::remove_var("CLAUDE_MEM_HOME");
+}
+
+#[tokio::test]
+async fn sse_stream_emits_initial_snapshot_and_live_memory_events() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+    let mut stream_response = client
+        .get(format!("http://{addr}/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream_response.status(), reqwest::StatusCode::OK);
+    assert!(stream_response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("text/event-stream"));
+
+    let initial = timeout(Duration::from_secs(2), stream_response.chunk())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&initial).contains("event: initial_load"));
+
+    let saved: Value = client
+        .post(format!("http://{addr}/api/memory/save"))
+        .json(&json!({
+            "project": "sse-e2e",
+            "title": "SSE live memory",
+            "text": "The SSE stream must emit live memory save events."
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(saved["success"], true);
+
+    let mut streamed = String::new();
+    for _ in 0..10 {
+        let chunk = timeout(Duration::from_secs(2), stream_response.chunk())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        streamed.push_str(&String::from_utf8_lossy(&chunk));
+        if streamed.contains("event: memory_saved") {
+            break;
+        }
+    }
+    assert!(streamed.contains("event: memory_saved"));
+    assert!(streamed.contains("SSE live memory"));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn v12_compatibility_routes_are_available() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state);
+
+    let (status, instructions) = get_json(app.clone(), "/api/instructions").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(instructions["name"], "claude-mem-rs");
+
+    let (status, init) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "compat-content-e2e",
+            "project": "compat-project",
+            "prompt": "Remember compatibility route coverage."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let session_id = init["sessionDbId"].as_i64().unwrap();
+
+    let (status, observation) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/memory/save",
+        json!({
+            "project": "compat-project",
+            "title": "Compat route memory",
+            "text": "Compatibility routes should fetch prompts, observations, sessions, and queue data."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let observation_id = observation["id"].as_i64().unwrap();
+
+    let (status, obs) = get_json(app.clone(), &format!("/api/observation/{observation_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(obs["title"], "Compat route memory");
+
+    let (status, prompts) = get_json(app.clone(), "/api/prompts?limit=10").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(prompts["count"], 1);
+    let prompt_id = prompts["prompts"][0]["id"].as_i64().unwrap();
+
+    let (status, prompt) = get_json(app.clone(), &format!("/api/prompt/{prompt_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(prompt["prompt_text"]
+        .as_str()
+        .unwrap()
+        .contains("compatibility route"));
+
+    let (status, session) = get_json(app.clone(), &format!("/api/session/{session_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session["content_session_id"], "compat-content-e2e");
+
+    let (status, legacy_obs) = json_request(
+        app.clone(),
+        Method::POST,
+        &format!("/sessions/{session_id}/observations"),
+        json!({
+            "tool_name": "Read",
+            "tool_input": { "file_path": "/repo/compat.rs" },
+            "tool_response": { "content": "queued compat observation" },
+            "cwd": "/repo"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(legacy_obs["status"], "queued");
+
+    let (status, pending) = get_json(app.clone(), "/api/pending-queue").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pending["queue"]["totalPending"], 0);
+    assert_eq!(
+        legacy_obs["processed"]["messagesProcessed"], 1,
+        "legacy compatibility route should enqueue and drain through the native observer"
+    );
+
+    let (status, process) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/pending-queue/process",
+        json!({ "sessionLimit": 1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(process["success"], true);
+    assert_eq!(process["result"]["messagesProcessed"], 0);
+
+    let (status, clear) = delete_json(app.clone(), "/api/pending-queue/all").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(clear["success"], true);
+
+    let (status, mcp) = get_json(app.clone(), "/api/mcp/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(mcp["enabled"], true);
+
+    let (status, search_help) = get_json(app, "/api/search/help").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(search_help["endpoints"].as_array().unwrap().len() > 3);
+}
+
+#[tokio::test]
+async fn queued_summarize_without_explicit_xml_is_agent_processed() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state);
+
+    let (status, _) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "implicit-summary-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Track power mitigation summary generation."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, summarize) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/summarize",
+        json!({
+            "contentSessionId": "implicit-summary-e2e",
+            "lastAssistantMessage": "Package wattage reduction was selected over chassis fan speed."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summarize["status"], "queued");
+    assert_eq!(summarize["processed"]["messagesProcessed"], 1);
+    assert_eq!(summarize["processed"]["summariesInserted"], 1);
+
+    let (status, pending) = get_json(app.clone(), "/api/pending-queue").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pending["queue"]["totalPending"], 0);
+
+    let (status, summaries) = get_json(app, "/api/summaries?project=cloudy-fork").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summaries["count"], 1);
+    assert!(summaries["summaries"][0]["learned"]
+        .as_str()
+        .unwrap()
+        .contains("Package wattage reduction"));
+}
+
+#[tokio::test]
+async fn fake_agent_runner_processes_queued_observation_xml() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state.clone());
+
+    let (status, init) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "fake-agent-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Use fake provider for observer queue proof."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let session_db_id = init["sessionDbId"].as_i64().unwrap();
+
+    {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, "fake-agent-e2e")
+            .unwrap()
+            .unwrap();
+        let pending_store = PendingMessageStore::default();
+        pending_store
+            .enqueue(
+                &conn,
+                &EnqueueInput {
+                    session_db_id,
+                    content_session_id: session.content_session_id,
+                    message_type: "observation".into(),
+                    tool_name: Some("Read".into()),
+                    tool_input: Some(json!({ "file_path": "/repo/fake.rs" })),
+                    tool_response: Some(json!({ "content": "ignored by fake response" })),
+                    cwd: Some("/home/kcrawley/projects/cloudy-fork".into()),
+                    created_at_epoch: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    let stats = process_pending_for_session(
+        Arc::clone(&state.conn),
+        session_db_id,
+        ObserverConfig {
+            provider: "fake".into(),
+            model_id: None,
+            tier_routing_enabled: true,
+            simple_model: None,
+            summary_model: None,
+            max_messages: 10,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stats,
+        QueueProcessStats {
+            sessions_started: 1,
+            started_session_ids: vec![session_db_id],
+            messages_processed: 1,
+            observations_inserted: 1,
+            observation_ids: stats.observation_ids.clone(),
+            ..Default::default()
+        }
+    );
+
+    let (status, search) = get_json(
+        app,
+        "/api/search?query=fake&project=cloudy-fork&type=observations",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(search["observations"][0]["title"], "Fake observer response");
+}
+
+#[tokio::test]
+async fn observer_tier_routing_applies_simple_model_metadata() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state.clone());
+
+    let (status, init) = json_request(
+        app,
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "tier-routing-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Use tier routing for simple read observations."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let session_db_id = init["sessionDbId"].as_i64().unwrap();
+
+    {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, "tier-routing-e2e")
+            .unwrap()
+            .unwrap();
+        PendingMessageStore::default()
+            .enqueue(
+                &conn,
+                &EnqueueInput {
+                    session_db_id,
+                    content_session_id: session.content_session_id,
+                    message_type: "observation".into(),
+                    tool_name: Some("Read".into()),
+                    tool_input: Some(json!({ "file_path": "/repo/tier.rs" })),
+                    tool_response: Some(json!({ "content": "simple read should use simple tier" })),
+                    cwd: Some("/home/kcrawley/projects/cloudy-fork".into()),
+                    created_at_epoch: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    let stats = process_pending_for_session(
+        Arc::clone(&state.conn),
+        session_db_id,
+        ObserverConfig {
+            provider: "local".into(),
+            model_id: Some("default-model".into()),
+            tier_routing_enabled: true,
+            simple_model: Some("simple-model".into()),
+            summary_model: Some("summary-model".into()),
+            max_messages: 10,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.messages_processed, 1);
+    assert_eq!(stats.observations_inserted, 1);
+
+    let conn = state.conn.lock().unwrap();
+    let observation = get_observation_by_id(&conn, stats.observation_ids[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        observation.generated_by_model.as_deref(),
+        Some("Local:simple-model")
+    );
 }

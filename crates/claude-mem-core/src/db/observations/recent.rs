@@ -8,11 +8,7 @@ use crate::types::observation::ObservationRow;
 use super::get::get_observations_by_ids;
 
 /// Fetch the most recent N observation ids, optionally filtered by project.
-fn recent_ids(
-    conn: &Connection,
-    project: Option<&str>,
-    limit: i64,
-) -> Result<Vec<i64>> {
+fn recent_ids(conn: &Connection, project: Option<&str>, limit: i64) -> Result<Vec<i64>> {
     let mut stmt = match project {
         None => conn.prepare(
             "SELECT id FROM observations

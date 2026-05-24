@@ -10,15 +10,14 @@
 //! don't collide on `$HOME/.claude-mem/worker.pid`.
 
 use claude_mem_supervisor::infrastructure::graceful_shutdown::{
-    perform_graceful_shutdown, read_pid_file, remove_pid_file, write_pid_file,
-    BoxFuture, CloseableClient, CloseableDatabase, GracefulShutdownConfig, PidInfo,
-    ShutdownableService, StopableService,
+    perform_graceful_shutdown, read_pid_file, remove_pid_file, write_pid_file, BoxFuture,
+    CloseableClient, CloseableDatabase, GracefulShutdownConfig, PidInfo, ShutdownableService,
+    StopableService,
 };
 use std::sync::{Arc, Mutex, MutexGuard};
 use tempfile::TempDir;
 
-static TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
+static TEST_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 /// Acquire TEST_LOCK, set CLAUDE_MEM_HOME to a fresh tempdir, and return
 /// both the lock guard (keeps other tests out) and the tempdir (must be
@@ -35,7 +34,10 @@ impl TestHome {
         std::env::set_var("CLAUDE_MEM_HOME", dir.path());
         // Ensure no leftover PID file from a previous panicked test.
         let _ = remove_pid_file();
-        Self { _lock: lock, _dir: dir }
+        Self {
+            _lock: lock,
+            _dir: dir,
+        }
     }
 }
 
@@ -118,7 +120,9 @@ fn pid_file_lifecycle_round_trips() {
     let _home = TestHome::new();
     let info = fresh_pid_info();
     write_pid_file(&info).unwrap();
-    let back = read_pid_file().unwrap().expect("read_pid_file should return Some");
+    let back = read_pid_file()
+        .unwrap()
+        .expect("read_pid_file should return Some");
     assert_eq!(back, info);
     remove_pid_file().unwrap();
     assert!(read_pid_file().unwrap().is_none());
@@ -150,7 +154,13 @@ async fn shutdown_calls_services_in_fixed_order() {
     let recorded = o.lock().unwrap().clone();
     assert_eq!(
         recorded,
-        vec!["serverClose", "sessionManager", "mcpClient", "chromaMcpManager", "dbManager"],
+        vec![
+            "serverClose",
+            "sessionManager",
+            "mcpClient",
+            "chromaMcpManager",
+            "dbManager"
+        ],
         "order must match TS: server→session→mcp→chroma→db"
     );
 }

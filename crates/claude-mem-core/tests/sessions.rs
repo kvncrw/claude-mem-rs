@@ -159,8 +159,14 @@ fn migration_25_defaults_platform_source_to_claude() {
         "INSERT INTO sdk_sessions
             (content_session_id, project, started_at, started_at_epoch, status, platform_source)
          VALUES (?1, ?2, ?3, ?4, 'active', 'cursor')",
-        ["cursor-session", "project", "2026-05-23T15:00:00Z", "1748012400"],
-    ).unwrap();
+        [
+            "cursor-session",
+            "project",
+            "2026-05-23T15:00:00Z",
+            "1748012400",
+        ],
+    )
+    .unwrap();
 
     let cursor_row = sessions::get_session_by_content_id(&conn, "cursor-session")
         .unwrap()

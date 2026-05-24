@@ -8,11 +8,13 @@ description = "HTTP API, search strategies, session/queue management for claude-
 [features]
 default = []
 chroma = []
-qdrant = ["dep:reqwest"]
+qdrant = []
 
 [dependencies]
 claude-mem-core = { workspace = true }
+claude-mem-sdk = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 axum = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
@@ -21,7 +23,7 @@ time = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

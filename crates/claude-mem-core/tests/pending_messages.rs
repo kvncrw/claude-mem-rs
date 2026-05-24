@@ -21,7 +21,8 @@ fn create_session(conn: &rusqlite::Connection, content: &str) -> i64 {
             started_at: "2026-05-23T15:00:00Z".into(),
             started_at_epoch: 1748012400,
         },
-    ).unwrap();
+    )
+    .unwrap();
     sessions::get_session_by_content_id(conn, content)
         .unwrap()
         .unwrap()
@@ -50,7 +51,8 @@ fn enqueue_msg(store: &PendingMessageStore, conn: &rusqlite::Connection, db_id: 
                 agent_type: None,
                 agent_id: None,
             },
-        ).unwrap()
+        )
+        .unwrap()
 }
 
 /// Set `status = 'processing', started_processing_at_epoch = epoch_ms` for a row.
@@ -115,7 +117,10 @@ fn actively_processing_messages_are_not_recovered() {
     set_processing_at(&conn, active_id, now_ms() - 5_000);
 
     let claimed = store.claim_next_message(&conn, db_id).unwrap().unwrap();
-    assert_eq!(claimed.id, pending_id, "should skip the actively-processing one");
+    assert_eq!(
+        claimed.id, pending_id,
+        "should skip the actively-processing one"
+    );
 
     let active_status: String = conn
         .query_row(
@@ -144,10 +149,18 @@ fn recovery_and_claim_is_atomic_within_single_call() {
     assert_eq!(claimed.id, stuck_id);
 
     let s1: String = conn
-        .query_row("SELECT status FROM pending_messages WHERE id = ?", [pending1], |r| r.get(0))
+        .query_row(
+            "SELECT status FROM pending_messages WHERE id = ?",
+            [pending1],
+            |r| r.get(0),
+        )
         .unwrap();
     let s2: String = conn
-        .query_row("SELECT status FROM pending_messages WHERE id = ?", [pending2], |r| r.get(0))
+        .query_row(
+            "SELECT status FROM pending_messages WHERE id = ?",
+            [pending2],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(s1, "pending");
     assert_eq!(s2, "pending");
@@ -172,37 +185,41 @@ fn self_healing_is_scoped_to_specified_session() {
 
     // Enqueue + make stuck in session 1 (must use session 1's content id in input).
     let s1_content = "session-1";
-    let stuck_in_s1 = store.enqueue(
-        &conn,
-        &EnqueueInput {
-            session_db_id: db_id1,
-            content_session_id: s1_content.into(),
-            message_type: "observation".into(),
-            tool_name: Some("TestTool".into()),
-            tool_input: Some(serde_json::json!({"test": "input"})),
-            tool_response: Some(serde_json::json!({"test": "response"})),
-            prompt_number: Some(1),
-            created_at_epoch: now_ms(),
-            ..Default::default()
-        },
-    ).unwrap();
+    let stuck_in_s1 = store
+        .enqueue(
+            &conn,
+            &EnqueueInput {
+                session_db_id: db_id1,
+                content_session_id: s1_content.into(),
+                message_type: "observation".into(),
+                tool_name: Some("TestTool".into()),
+                tool_input: Some(serde_json::json!({"test": "input"})),
+                tool_response: Some(serde_json::json!({"test": "response"})),
+                prompt_number: Some(1),
+                created_at_epoch: now_ms(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     set_processing_at(&conn, stuck_in_s1, now_ms() - 120_000);
 
     // Enqueue + make stuck in session 2.
-    let s2_msg = store.enqueue(
-        &conn,
-        &EnqueueInput {
-            session_db_id: db_id2,
-            content_session_id: "other-session".into(),
-            message_type: "observation".into(),
-            tool_name: Some("TestTool".into()),
-            tool_input: Some(serde_json::json!({"test": "input"})),
-            tool_response: Some(serde_json::json!({"test": "response"})),
-            prompt_number: Some(1),
-            created_at_epoch: now_ms(),
-            ..Default::default()
-        },
-    ).unwrap();
+    let s2_msg = store
+        .enqueue(
+            &conn,
+            &EnqueueInput {
+                session_db_id: db_id2,
+                content_session_id: "other-session".into(),
+                message_type: "observation".into(),
+                tool_name: Some("TestTool".into()),
+                tool_input: Some(serde_json::json!({"test": "input"})),
+                tool_response: Some(serde_json::json!({"test": "response"})),
+                prompt_number: Some(1),
+                created_at_epoch: now_ms(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     set_processing_at(&conn, s2_msg, now_ms() - 120_000);
 
     // Claim for session 2 — only heals session 2.

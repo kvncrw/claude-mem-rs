@@ -24,16 +24,11 @@ const STRIP_EXACT: &[&str] = &[
 
 /// `CLAUDE_CODE_*` vars allowed to pass through even though their prefix
 /// would otherwise strip them.
-const ALLOWED_CLAUDE_CODE_VARS: &[&str] = &[
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "CLAUDE_CODE_GIT_BASH_PATH",
-];
+const ALLOWED_CLAUDE_CODE_VARS: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_GIT_BASH_PATH"];
 
 /// Run the sanitize algorithm over `env`, returning a fresh `HashMap`
 /// without the stripped keys and with `None` (undefined) values dropped.
-pub fn sanitize_env(
-    env: &HashMap<String, Option<String>>,
-) -> HashMap<String, String> {
+pub fn sanitize_env(env: &HashMap<String, Option<String>>) -> HashMap<String, String> {
     let mut out = HashMap::with_capacity(env.len());
     for (k, v) in env {
         let some_value = match v {

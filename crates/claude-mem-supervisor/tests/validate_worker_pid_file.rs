@@ -11,8 +11,7 @@ use std::fs::write as fs_write;
 use std::sync::Mutex;
 use tempfile::TempDir;
 
-static TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
+static TEST_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 fn new_temp_dir() -> TempDir {
     tempfile::TempDir::new().unwrap()

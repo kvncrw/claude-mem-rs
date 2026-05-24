@@ -15,7 +15,7 @@ Windows is not a supported target. The runtime assumes Linux/macOS/POSIX process
 
 ## Status
 
-The Rust port currently covers the normal lifecycle path:
+The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfaces needed to run a native Rust memory worker:
 
 - session start / prompt persistence
 - PostToolUse observation capture
@@ -34,8 +34,14 @@ The Rust port currently covers the normal lifecycle path:
 - worker health, readiness, version, doctor, PID file, and graceful HTTP shutdown
 - import/export, settings, logs, project/stats, processing-status, and guarded branch admin routes
 - MCP save/search/timeline/fetch tools over the worker
+- native observer queue processing for queued observations and summaries
+- local/fake deterministic observer runners plus Claude CLI, Gemini REST, and OpenRouter REST provider runners
+- tier model selection metadata for queued simple-tool and summary work
+- browser viewer shell with live SSE events for session, observation, summary, queue, and manual-memory lifecycle changes
 
-The remaining TypeScript-only surfaces are installer UX and deeper background watcher integrations. The worker/runtime path is native Rust.
+Queued observation and summary routes now drain through the Rust observer processor. The default provider is `local`, which deterministically converts hook payloads into recallable XML-backed memory without external credentials. Set `CLAUDE_MEM_PROVIDER=claude`, `gemini`, `openrouter`, or `fake` to use the corresponding runner.
+
+The remaining TypeScript-only surfaces include installer UX, transcript watcher integrations, rich browser UI behavior, and folder `CLAUDE.md` regeneration/cleanup flows.
 
 ## Build And Test
 
@@ -107,6 +113,29 @@ Optional real-Qdrant smoke coverage:
 
 ```bash
 QDRANT_URL=http://127.0.0.1:6333 cargo test -p claude-mem-worker --features qdrant real_qdrant_smoke
+```
+
+## Observer Providers
+
+The worker processes pending observations and summaries through the observer queue. Provider selection is controlled with:
+
+```bash
+export CLAUDE_MEM_PROVIDER=local        # default deterministic local runner
+export CLAUDE_MEM_PROVIDER=claude       # shells out to claude
+export CLAUDE_MEM_PROVIDER=gemini       # uses Gemini REST API
+export CLAUDE_MEM_PROVIDER=openrouter   # uses OpenRouter REST API
+```
+
+Useful provider settings:
+
+```bash
+export CLAUDE_MEM_MODEL=sonnet
+export CLAUDE_MEM_TIER_SIMPLE_MODEL=haiku
+export CLAUDE_MEM_TIER_SUMMARY_MODEL=opus
+export CLAUDE_MEM_CLAUDE_COMMAND=claude
+export CLAUDE_MEM_CLAUDE_ARGS="-p"
+export CLAUDE_MEM_GEMINI_API_KEY=...
+export CLAUDE_MEM_OPENROUTER_API_KEY=...
 ```
 
 ## Worker HTTP

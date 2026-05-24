@@ -1,5 +1,5 @@
-use claude_mem_supervisor::hooks::{WorkerClient, execute_hook};
-use claude_mem_worker::http::router::{AppState, build_router_with_state};
+use claude_mem_supervisor::hooks::{execute_hook, WorkerClient};
+use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -59,11 +59,9 @@ async fn claude_hook_round_trip_creates_memory_and_injects_context() {
     let hook_output = context.output.hook_specific_output.unwrap();
     assert_eq!(hook_output.hook_event_name, "SessionStart");
     assert!(hook_output.additional_context.contains("Read tool use"));
-    assert!(
-        hook_output
-            .additional_context
-            .contains("Dynatron thermal memories")
-    );
+    assert!(hook_output
+        .additional_context
+        .contains("Dynatron thermal memories"));
 
     let complete_input = json!({
         "session_id": "claude-hook-content-e2e",

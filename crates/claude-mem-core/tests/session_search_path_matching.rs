@@ -106,10 +106,7 @@ fn collapses_multiple_consecutive_slashes() {
 
 #[test]
 fn false_for_single_segment_file_path() {
-    assert!(!is_direct_child(
-        "router.py",
-        "/Users/dev/project/app/api"
-    ));
+    assert!(!is_direct_child("router.py", "/Users/dev/project/app/api"));
 }
 
 #[test]
@@ -169,8 +166,5 @@ fn normalize_handles_windows_unc_paths() {
 
 #[test]
 fn normalize_preserves_leading_slash_for_absolute() {
-    assert_eq!(
-        normalize_path("/Users/dev/project"),
-        "/Users/dev/project"
-    );
+    assert_eq!(normalize_path("/Users/dev/project"), "/Users/dev/project");
 }

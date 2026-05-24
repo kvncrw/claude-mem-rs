@@ -27,25 +27,63 @@ pub(crate) fn is_version_applied(conn: &Connection, version: i32) -> Result<bool
 /// `apply_vN` dispatcher checks `is_version_applied` first, so a second
 /// `apply_all` call on a fully-migrated schema is a no-op.
 pub fn apply_all(conn: &Connection) -> Result<()> {
-    if !is_version_applied(conn, 4)? { apply_v4(conn)?; }
-    if !is_version_applied(conn, 5)? { apply_v5(conn)?; }
-    if !is_version_applied(conn, 6)? { apply_v6(conn)?; }
-    if !is_version_applied(conn, 7)? { apply_v7(conn)?; }
-    if !is_version_applied(conn, 8)? { apply_v8(conn)?; }
-    if !is_version_applied(conn, 9)? { apply_v9(conn)?; }
-    if !is_version_applied(conn, 10)? { apply_v10(conn)?; }
-    if !is_version_applied(conn, 11)? { apply_v11(conn)?; }
-    if !is_version_applied(conn, 16)? { apply_v16(conn)?; }
-    if !is_version_applied(conn, 17)? { apply_v17(conn)?; }
-    if !is_version_applied(conn, 19)? { apply_v19(conn)?; }
-    if !is_version_applied(conn, 20)? { apply_v20(conn)?; }
-    if !is_version_applied(conn, 21)? { apply_v21(conn)?; }
-    if !is_version_applied(conn, 22)? { apply_v22(conn)?; }
-    if !is_version_applied(conn, 23)? { apply_v23(conn)?; }
-    if !is_version_applied(conn, 24)? { apply_v24(conn)?; }
-    if !is_version_applied(conn, 25)? { apply_v25(conn)?; }
-    if !is_version_applied(conn, 26)? { apply_v26(conn)?; }
-    if !is_version_applied(conn, 26)? { apply_v26(conn)?; }
+    if !is_version_applied(conn, 4)? {
+        apply_v4(conn)?;
+    }
+    if !is_version_applied(conn, 5)? {
+        apply_v5(conn)?;
+    }
+    if !is_version_applied(conn, 6)? {
+        apply_v6(conn)?;
+    }
+    if !is_version_applied(conn, 7)? {
+        apply_v7(conn)?;
+    }
+    if !is_version_applied(conn, 8)? {
+        apply_v8(conn)?;
+    }
+    if !is_version_applied(conn, 9)? {
+        apply_v9(conn)?;
+    }
+    if !is_version_applied(conn, 10)? {
+        apply_v10(conn)?;
+    }
+    if !is_version_applied(conn, 11)? {
+        apply_v11(conn)?;
+    }
+    if !is_version_applied(conn, 16)? {
+        apply_v16(conn)?;
+    }
+    if !is_version_applied(conn, 17)? {
+        apply_v17(conn)?;
+    }
+    if !is_version_applied(conn, 19)? {
+        apply_v19(conn)?;
+    }
+    if !is_version_applied(conn, 20)? {
+        apply_v20(conn)?;
+    }
+    if !is_version_applied(conn, 21)? {
+        apply_v21(conn)?;
+    }
+    if !is_version_applied(conn, 22)? {
+        apply_v22(conn)?;
+    }
+    if !is_version_applied(conn, 23)? {
+        apply_v23(conn)?;
+    }
+    if !is_version_applied(conn, 24)? {
+        apply_v24(conn)?;
+    }
+    if !is_version_applied(conn, 25)? {
+        apply_v25(conn)?;
+    }
+    if !is_version_applied(conn, 26)? {
+        apply_v26(conn)?;
+    }
+    if !is_version_applied(conn, 26)? {
+        apply_v26(conn)?;
+    }
     Ok(())
 }
 
@@ -333,7 +371,12 @@ fn apply_v11(conn: &Connection) -> Result<()> {
     const V: i32 = 11;
     let tx = conn.unchecked_transaction()?;
     add_column_if_missing(&tx, "observations", "discovery_tokens", "INTEGER DEFAULT 0")?;
-    add_column_if_missing(&tx, "session_summaries", "discovery_tokens", "INTEGER DEFAULT 0")?;
+    add_column_if_missing(
+        &tx,
+        "session_summaries",
+        "discovery_tokens",
+        "INTEGER DEFAULT 0",
+    )?;
     tx.execute(
         "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
         [V],
@@ -387,12 +430,32 @@ fn apply_v16(conn: &Connection) -> Result<()> {
 fn apply_v17(conn: &Connection) -> Result<()> {
     const V: i32 = 17;
     let tx = conn.unchecked_transaction()?;
-    rename_column_if(&tx, "sdk_sessions", "claude_session_id", "content_session_id")?;
+    rename_column_if(
+        &tx,
+        "sdk_sessions",
+        "claude_session_id",
+        "content_session_id",
+    )?;
     rename_column_if(&tx, "sdk_sessions", "sdk_session_id", "memory_session_id")?;
-    rename_column_if(&tx, "pending_messages", "claude_session_id", "content_session_id")?;
+    rename_column_if(
+        &tx,
+        "pending_messages",
+        "claude_session_id",
+        "content_session_id",
+    )?;
     rename_column_if(&tx, "observations", "sdk_session_id", "memory_session_id")?;
-    rename_column_if(&tx, "session_summaries", "sdk_session_id", "memory_session_id")?;
-    rename_column_if(&tx, "user_prompts", "claude_session_id", "content_session_id")?;
+    rename_column_if(
+        &tx,
+        "session_summaries",
+        "sdk_session_id",
+        "memory_session_id",
+    )?;
+    rename_column_if(
+        &tx,
+        "user_prompts",
+        "claude_session_id",
+        "content_session_id",
+    )?;
     tx.execute(
         "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
         [V],
@@ -656,12 +719,7 @@ fn add_column_if_missing(
     Ok(())
 }
 
-fn rename_column_if(
-    conn: &Connection,
-    table: &str,
-    old_name: &str,
-    new_name: &str,
-) -> Result<()> {
+fn rename_column_if(conn: &Connection, table: &str, old_name: &str, new_name: &str) -> Result<()> {
     let has_old: bool = conn
         .prepare(&format!("PRAGMA table_info({})", table))?
         .query_map([], |row| Ok(row.get::<_, String>(1)?))?
@@ -687,11 +745,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         apply_all(&conn).unwrap();
         let applied: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM schema_versions",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r.get(0))
             .unwrap();
         // 18 migrations: v4,5,6,7,8,9,10,11,16,17,19,20,21,22,23,24,25,26.
         // (v1-v3 never existed; v12-v15, v18 are gaps in the TS runner.)
@@ -704,11 +758,7 @@ mod tests {
         apply_all(&conn).unwrap();
         apply_all(&conn).unwrap();
         let applied: i32 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM schema_versions",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(applied, 18);
     }

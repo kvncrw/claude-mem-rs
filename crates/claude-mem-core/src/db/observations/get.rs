@@ -64,10 +64,7 @@ pub fn get_observation_by_id(conn: &Connection, id: i64) -> Result<Option<Observ
 }
 
 /// Load a batch of observations by ids, preserving the input ordering.
-pub fn get_observations_by_ids(
-    conn: &Connection,
-    ids: &[i64],
-) -> Result<Vec<ObservationRow>> {
+pub fn get_observations_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<ObservationRow>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -77,16 +74,16 @@ pub fn get_observations_by_ids(
         SELECT_COLS, placeholders
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), row_from)?;
     let mut out: Vec<ObservationRow> = Vec::with_capacity(ids.len());
     for r in rows {
         out.push(r?);
     }
-    out.sort_by_key(|r| {
-        ids.iter().position(|id| *id == r.id).unwrap_or(usize::MAX)
-    });
+    out.sort_by_key(|r| ids.iter().position(|id| *id == r.id).unwrap_or(usize::MAX));
     Ok(out)
 }
 
@@ -140,7 +137,10 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
 
 /// Helper used by neighbouring modules (`recent`, `get_observations_by_ids`).
 /// Start offset is the column index of `id` within the row.
-pub(crate) fn row_from_helper(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<ObservationRow> {
+pub(crate) fn row_from_helper(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<ObservationRow> {
     let facts_raw: String = row.get(offset + 8)?;
     let concepts_raw: String = row.get(offset + 9)?;
     let files_read_raw: String = row.get(offset + 10)?;

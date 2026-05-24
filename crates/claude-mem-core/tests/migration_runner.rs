@@ -159,9 +159,9 @@ fn observations_fk_cascades_on_update() {
     let conn = open_in_memory().unwrap();
     let fks = foreign_keys(&conn, "observations");
     // Expect (table= sdk_sessions, on_update=CASCADE, on_delete=CASCADE).
-    let has_update_cascade = fks.iter().any(|(t, on_u, on_d)| {
-        t == "sdk_sessions" && on_u == "CASCADE" && on_d == "CASCADE"
-    });
+    let has_update_cascade = fks
+        .iter()
+        .any(|(t, on_u, on_d)| t == "sdk_sessions" && on_u == "CASCADE" && on_d == "CASCADE");
     assert!(
         has_update_cascade,
         "observations.FK→sdk_sessions missing CASCADE on both update+delete; got {fks:?}"
@@ -172,9 +172,9 @@ fn observations_fk_cascades_on_update() {
 fn session_summaries_fk_cascades_on_update() {
     let conn = open_in_memory().unwrap();
     let fks = foreign_keys(&conn, "session_summaries");
-    let ok = fks.iter().any(|(t, on_u, on_d)| {
-        t == "sdk_sessions" && on_u == "CASCADE" && on_d == "CASCADE"
-    });
+    let ok = fks
+        .iter()
+        .any(|(t, on_u, on_d)| t == "sdk_sessions" && on_u == "CASCADE" && on_d == "CASCADE");
     assert!(ok, "session_summaries.FK cascade missing; got {fks:?}");
 }
 
@@ -253,7 +253,10 @@ fn fts5_triggers_fire_on_delete() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(hit, 0, "FTS5 AD trigger should remove the deleted row from FTS");
+    assert_eq!(
+        hit, 0,
+        "FTS5 AD trigger should remove the deleted row from FTS"
+    );
 }
 
 #[test]
@@ -312,7 +315,10 @@ fn fts5_triggers_fire_on_session_summaries() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(hit, 1, "session_summaries_fts AI trigger should fire on insert");
+    assert_eq!(
+        hit, 1,
+        "session_summaries_fts AI trigger should fire on insert"
+    );
 }
 
 #[test]
@@ -354,13 +360,23 @@ fn all_expected_indexes_exist_after_apply() {
     }
 
     let prompts_idx = index_names(&conn, "user_prompts");
-    assert!(prompts_idx.iter().any(|n| n == "idx_user_prompts_claude_session"));
+    assert!(prompts_idx
+        .iter()
+        .any(|n| n == "idx_user_prompts_claude_session"));
     assert!(prompts_idx.iter().any(|n| n == "idx_user_prompts_created"));
-    assert!(prompts_idx.iter().any(|n| n == "idx_user_prompts_prompt_number"));
+    assert!(prompts_idx
+        .iter()
+        .any(|n| n == "idx_user_prompts_prompt_number"));
     assert!(prompts_idx.iter().any(|n| n == "idx_user_prompts_lookup"));
 
     let pending_idx = index_names(&conn, "pending_messages");
-    assert!(pending_idx.iter().any(|n| n == "idx_pending_messages_session"));
-    assert!(pending_idx.iter().any(|n| n == "idx_pending_messages_status"));
-    assert!(pending_idx.iter().any(|n| n == "idx_pending_messages_claude_session"));
+    assert!(pending_idx
+        .iter()
+        .any(|n| n == "idx_pending_messages_session"));
+    assert!(pending_idx
+        .iter()
+        .any(|n| n == "idx_pending_messages_status"));
+    assert!(pending_idx
+        .iter()
+        .any(|n| n == "idx_pending_messages_claude_session"));
 }

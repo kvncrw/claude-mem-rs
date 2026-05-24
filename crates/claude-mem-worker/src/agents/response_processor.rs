@@ -170,9 +170,15 @@ pub fn process_agent_response(
         .clone()
         .ok_or(ResponseProcessorError::MissingMemorySessionId)?;
 
+    let generated_by_model = match options.model_id.as_deref() {
+        Some(model_id) if !model_id.is_empty() => {
+            Some(format!("{}:{}", options.agent_name, model_id))
+        }
+        _ => Some(options.agent_name.clone()),
+    };
     let observation_inputs = observations
         .iter()
-        .map(parsed_observation_to_input)
+        .map(|obs| parsed_observation_to_input(obs, generated_by_model.clone()))
         .collect::<Vec<_>>();
     let summary_input = summary
         .as_ref()
@@ -276,7 +282,10 @@ pub fn parse_summary(text: &str) -> Option<ParsedSummary> {
     Some(summary)
 }
 
-fn parsed_observation_to_input(obs: &ParsedObservation) -> ObservationInput {
+fn parsed_observation_to_input(
+    obs: &ParsedObservation,
+    generated_by_model: Option<String>,
+) -> ObservationInput {
     ObservationInput {
         r#type: obs.r#type.clone(),
         title: obs.title.clone(),
@@ -286,6 +295,7 @@ fn parsed_observation_to_input(obs: &ParsedObservation) -> ObservationInput {
         concepts: Some(obs.concepts.clone()),
         files_read: Some(obs.files_read.clone()),
         files_modified: Some(obs.files_modified.clone()),
+        generated_by_model,
         ..Default::default()
     }
 }

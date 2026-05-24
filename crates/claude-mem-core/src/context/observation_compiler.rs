@@ -12,27 +12,21 @@ pub struct ObservationQuery {
 }
 
 /// Fetch observations matching a project-scoped query, ordered newest-first.
-pub fn query_observations(
-    conn: &Connection,
-    q: &ObservationQuery,
-) -> Result<Vec<ObservationRow>> {
+pub fn query_observations(conn: &Connection, q: &ObservationQuery) -> Result<Vec<ObservationRow>> {
     let ids: Vec<i64> = if let Some(p) = q.project.as_deref() {
         let mut stmt = conn.prepare(
             "SELECT id FROM observations WHERE project = ?
              ORDER BY created_at_epoch DESC, id DESC LIMIT ?",
         )?;
-        let collected: Result<Vec<i64>> = stmt
-            .query_map(params![p, q.limit], |r| r.get(0))?
-            .collect();
+        let collected: Result<Vec<i64>> =
+            stmt.query_map(params![p, q.limit], |r| r.get(0))?.collect();
         collected?
     } else {
         let mut stmt = conn.prepare(
             "SELECT id FROM observations
              ORDER BY created_at_epoch DESC, id DESC LIMIT ?",
         )?;
-        let collected: Result<Vec<i64>> = stmt
-            .query_map(params![q.limit], |r| r.get(0))?
-            .collect();
+        let collected: Result<Vec<i64>> = stmt.query_map(params![q.limit], |r| r.get(0))?.collect();
         collected?
     };
     get_observations_by_ids(conn, &ids)

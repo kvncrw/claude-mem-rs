@@ -22,11 +22,7 @@ fn create_session(conn: &rusqlite::Connection, content_session_id: &str) -> Stri
     content_session_id.to_string()
 }
 
-fn prompt_input(
-    content_session_id: &str,
-    prompt_number: i64,
-    prompt_text: &str,
-) -> PromptInput {
+fn prompt_input(content_session_id: &str, prompt_number: i64, prompt_text: &str) -> PromptInput {
     PromptInput {
         content_session_id: content_session_id.into(),
         prompt_number,
@@ -80,13 +76,25 @@ fn prompt_number_returns_count_of_prompts_for_session() {
     let conn = open_in_memory().unwrap();
     let content = create_session(&conn, "count-test-session");
 
-    assert_eq!(get_prompt_number_from_user_prompts(&conn, &content).unwrap(), 0);
+    assert_eq!(
+        get_prompt_number_from_user_prompts(&conn, &content).unwrap(),
+        0
+    );
     save_user_prompt(&conn, &prompt_input(&content, 1, "First prompt")).unwrap();
-    assert_eq!(get_prompt_number_from_user_prompts(&conn, &content).unwrap(), 1);
+    assert_eq!(
+        get_prompt_number_from_user_prompts(&conn, &content).unwrap(),
+        1
+    );
     save_user_prompt(&conn, &prompt_input(&content, 2, "Second prompt")).unwrap();
-    assert_eq!(get_prompt_number_from_user_prompts(&conn, &content).unwrap(), 2);
+    assert_eq!(
+        get_prompt_number_from_user_prompts(&conn, &content).unwrap(),
+        2
+    );
     save_user_prompt(&conn, &prompt_input(&content, 3, "Third prompt")).unwrap();
-    assert_eq!(get_prompt_number_from_user_prompts(&conn, &content).unwrap(), 3);
+    assert_eq!(
+        get_prompt_number_from_user_prompts(&conn, &content).unwrap(),
+        3
+    );
 }
 
 #[test]
@@ -117,7 +125,10 @@ fn prompt_number_handles_100_prompts() {
     for i in 1..=100 {
         save_user_prompt(&conn, &prompt_input(&content, i, &format!("Prompt {i}"))).unwrap();
     }
-    assert_eq!(get_prompt_number_from_user_prompts(&conn, &content).unwrap(), 100);
+    assert_eq!(
+        get_prompt_number_from_user_prompts(&conn, &content).unwrap(),
+        100
+    );
 }
 
 #[test]

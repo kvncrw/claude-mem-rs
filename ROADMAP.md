@@ -43,12 +43,19 @@ Implemented in Rust:
 - Claude, Cursor, Gemini CLI, Codex, and raw hook adapters.
 - Import/export, doctor, stats/projects, processing-status, settings, logs, and guarded branch routes.
 - Session summary generation on explicit summarize calls and completion fallback.
+- Pending-message queue processing through native Rust observer runners.
+- Claude CLI, Gemini REST, OpenRouter REST, fake, and deterministic local observer providers.
+- Tier model selection for queued simple-tool and summary work.
+- Persistent SSE broadcaster for live observation, summary, session, queue, and manual-memory events.
 
 Remaining:
 
-- Persistent SSE broadcaster for live observation/summary/prompt events.
+- Harden Claude CLI resume/session-id capture against real Claude CLI JSON/stream output variants.
+- Add real-provider smoke tests behind explicit env gates for Claude, Gemini, and OpenRouter.
+- Expand provider fallback telemetry and retry reporting in admin routes.
 - Richer browser UI beyond the lightweight built-in viewer.
 - Deeper transcript watcher/install flows for non-Claude editors.
+- Folder `CLAUDE.md` generation, cleanup, and file-context helper flows.
 
 ## Migration Principles
 

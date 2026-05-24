@@ -13,8 +13,7 @@ use claude_mem_supervisor::infrastructure::health_checker::{
 };
 use std::sync::Mutex;
 
-static TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
-    std::sync::LazyLock::new(|| Mutex::new(()));
+static TEST_LOCK: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 fn is_running() -> bool {
     is_running_for_test()

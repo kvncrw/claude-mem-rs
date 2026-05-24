@@ -106,10 +106,7 @@ fn handles_empty_env() {
 
 #[test]
 fn skips_entries_with_undefined_values() {
-    let result = sanitize_env(&env(&[
-        ("DEFINED", Some("value")),
-        ("UNDEFINED_KEY", None),
-    ]));
+    let result = sanitize_env(&env(&[("DEFINED", Some("value")), ("UNDEFINED_KEY", None)]));
     assert_eq!(result.get("DEFINED").map(String::as_str), Some("value"));
     assert!(!result.contains_key("UNDEFINED_KEY"));
 }

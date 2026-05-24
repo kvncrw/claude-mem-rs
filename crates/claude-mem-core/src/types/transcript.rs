@@ -33,9 +33,7 @@ pub enum ContentItem {
         is_error: Option<bool>,
     },
     #[serde(rename = "image")]
-    Image {
-        source: serde_json::Value,
-    },
+    Image { source: serde_json::Value },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

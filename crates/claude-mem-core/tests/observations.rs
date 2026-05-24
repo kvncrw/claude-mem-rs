@@ -5,11 +5,11 @@
 //! against an in-memory schema with full migrations applied.
 
 use claude_mem_core::db::observations::{
-    get_observation_by_id, get_recent_observations, store_observation,
-    compute_observation_content_hash,
+    compute_observation_content_hash, get_observation_by_id, get_recent_observations,
+    store_observation,
 };
-use claude_mem_core::db::sessions;
 use claude_mem_core::db::open_in_memory;
+use claude_mem_core::db::sessions;
 use claude_mem_core::types::observation::ObservationInput;
 use claude_mem_core::types::session::CreateSessionInput;
 
@@ -49,7 +49,11 @@ fn create_session_with_memory_id(
     memory_session_id.to_string()
 }
 
-fn stored_input_from(obs: ObservationInput, memory_session_id: &str, project: &str) -> ObservationInput {
+fn stored_input_from(
+    obs: ObservationInput,
+    memory_session_id: &str,
+    project: &str,
+) -> ObservationInput {
     let mut input = obs;
     input.memory_session_id = memory_session_id.into();
     input.project = project.into();
@@ -60,7 +64,8 @@ fn stored_input_from(obs: ObservationInput, memory_session_id: &str, project: &s
 #[test]
 fn store_returns_positive_id() {
     let conn = open_in_memory().unwrap();
-    let mem = create_session_with_memory_id(&conn, "content-123", "mem-session-123", "test-project");
+    let mem =
+        create_session_with_memory_id(&conn, "content-123", "mem-session-123", "test-project");
     let obs = stored_input_from(base_input(), &mem, "test-project");
     match store_observation(&conn, &obs).unwrap() {
         claude_mem_core::db::observations::store::StoreObservationResult::Inserted(id) => {
@@ -73,12 +78,9 @@ fn store_returns_positive_id() {
 #[test]
 fn store_persists_all_fields() {
     let conn = open_in_memory().unwrap();
-    let mem = create_session_with_memory_id(&conn, "content-456", "mem-session-456", "test-project");
-    let mut obs = stored_input_from(
-        base_input(),
-        &mem,
-        "test-project",
-    );
+    let mem =
+        create_session_with_memory_id(&conn, "content-456", "mem-session-456", "test-project");
+    let mut obs = stored_input_from(base_input(), &mem, "test-project");
     obs.r#type = "bugfix".into();
     obs.title = Some("Fixed critical bug".into());
     obs.subtitle = Some("Memory leak".into());
@@ -108,7 +110,8 @@ fn store_persists_all_fields() {
 #[test]
 fn override_timestamp_epoch_honours_caller_value() {
     let conn = open_in_memory().unwrap();
-    let mem = create_session_with_memory_id(&conn, "content-789", "mem-session-789", "test-project");
+    let mem =
+        create_session_with_memory_id(&conn, "content-789", "mem-session-789", "test-project");
     let past = 1_600_000_000_000i64; // Sep 13, 2020
     let mut obs = stored_input_from(base_input(), &mem, "test-project");
     obs.created_at_epoch = past;
@@ -173,35 +176,37 @@ fn recent_ordered_desc_and_respects_limit_and_project_filter() {
     assert_eq!(recent[2].prompt_number, Some(1));
 
     assert_eq!(
-        get_recent_observations(&conn, Some(project), 2).unwrap().len(),
+        get_recent_observations(&conn, Some(project), 2)
+            .unwrap()
+            .len(),
         2
     );
 
     // Project filter.
     let ma = create_session_with_memory_id(&conn, "ca", "sa", "project-a");
     let mb = create_session_with_memory_id(&conn, "cb", "sb", "project-b");
-    store_observation(
-        &conn,
-        &stored_input_from(base_input(), &ma, "project-a"),
-    ).unwrap();
-    store_observation(
-        &conn,
-        &stored_input_from(base_input(), &mb, "project-b"),
-    ).unwrap();
+    store_observation(&conn, &stored_input_from(base_input(), &ma, "project-a")).unwrap();
+    store_observation(&conn, &stored_input_from(base_input(), &mb, "project-b")).unwrap();
     // project-a has only the obs stored under `ma` above; the 3 earlier obs
     // are scoped to "test-project" and don't cross project boundaries.
     assert_eq!(
-        get_recent_observations(&conn, Some("project-a"), 10).unwrap().len(),
+        get_recent_observations(&conn, Some("project-a"), 10)
+            .unwrap()
+            .len(),
         1,
     );
     assert_eq!(
-        get_recent_observations(&conn, Some("project-b"), 10).unwrap().len(),
+        get_recent_observations(&conn, Some("project-b"), 10)
+            .unwrap()
+            .len(),
         1,
     );
 
-    assert!(get_recent_observations(&conn, Some("nonexistent-project"), 10)
-        .unwrap()
-        .is_empty());
+    assert!(
+        get_recent_observations(&conn, Some("nonexistent-project"), 10)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
