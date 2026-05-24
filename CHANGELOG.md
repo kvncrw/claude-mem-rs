@@ -48,3 +48,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   → `#[derive(Default)]`, `repeat().take(N)` → `repeat_n`, etc.).
   Behavior preserved. This unblocks the `-D warnings` clippy gate for
   the new corpus modules.
+
+### Tests
+
+- **Installer fixture parity** — pinned the output shape of every
+  non-Claude installer integration (`.cursor/mcp.json`, `.gemini/settings.json`,
+  `.codex/AGENTS.md` + transcript-watch sample, `.config/opencode/opencode.json`
+  + generated lifecycle plugin JS). 18 tests across 4 new files under
+  `crates/claude-mem-supervisor/tests/installer_{cursor,gemini,codex,opencode}_fixture.rs`.
+  Stale Gemini `Stop` hook removal, opencode plugin event names, dedupe on
+  rerun, and preservation of user-customized config keys are all covered.
+  ([#2](https://github.com/kvncrw/claude-mem-rs/issues/2))
