@@ -60,7 +60,7 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - tier model selection metadata for queued simple-tool and summary work
 - browser viewer shell with live SSE events for session, observation, summary, queue, and manual-memory lifecycle changes
 - Claude Stop/summarize transcript JSONL extraction for summary generation, with system-reminder stripping and completion cleanup
-- rich built-in browser viewer for feed/search/timeline/context/admin/queue/logs/settings workflows
+- rich built-in Next.js browser dashboard for feed/search/timeline/context/admin/queue/logs/settings workflows
 - POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, Codex transcript integration, and opencode MCP/plugin integration
 - generic JSONL transcript watcher daemon with v12-compatible schema config, offset state, tool pairing, summaries, and AGENTS context updates
 - folder `CLAUDE.md` memory-context generation and cleanup
@@ -74,6 +74,14 @@ Queued observation and summary routes now drain through the Rust observer proces
 cargo build --workspace
 cargo test --workspace
 cargo test -p claude-mem-worker --features qdrant
+```
+
+The worker embeds the static dashboard from `apps/dashboard/out`. Rebuild it after dashboard changes before compiling or testing the worker:
+
+```bash
+cd apps/dashboard
+bun install
+bun run build
 ```
 
 Optional live provider smoke coverage is gated because it calls real CLIs/APIs:
