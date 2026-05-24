@@ -8,6 +8,15 @@ description = "Stdio MCP server over worker HTTP (rmcp-based) for claude-mem-rs"
 [lints]
 workspace = true
 
+[features]
+default = []
+# Opt-in marker that mirrors the worker's `knowledge-agent` cargo feature so
+# downstream binaries can be built consistently. The MCP tools themselves are
+# always registered — prime/query/reprime simply proxy to the worker, which
+# returns 501 Not Implemented when its own feature is off. Enabling this
+# feature here propagates the worker feature transitively.
+knowledge-agent = ["claude-mem-worker/knowledge-agent"]
+
 [dependencies]
 claude-mem-core = { workspace = true }
 claude-mem-worker = { workspace = true }

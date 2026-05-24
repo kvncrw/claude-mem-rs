@@ -22,23 +22,13 @@ pub enum ValidateWorkerPidStatus {
 }
 
 /// On-disk shape of the worker PID file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerPidFile {
     pub pid: u32,
     pub port: u16,
     #[serde(default)]
     pub started_at: Option<String>,
-}
-
-impl Default for WorkerPidFile {
-    fn default() -> Self {
-        Self {
-            pid: 0,
-            port: 0,
-            started_at: None,
-        }
-    }
 }
 
 /// Validate a worker PID file at the given path.

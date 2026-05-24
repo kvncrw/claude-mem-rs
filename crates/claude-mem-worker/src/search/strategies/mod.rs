@@ -19,31 +19,21 @@ pub struct DateRange {
     pub end_epoch: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum SearchType {
+    #[default]
     All,
     Observations,
     Sessions,
     Prompts,
 }
 
-impl Default for SearchType {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum OrderBy {
+    #[default]
     DateDesc,
     DateAsc,
     Relevance,
-}
-
-impl Default for OrderBy {
-    fn default() -> Self {
-        Self::DateDesc
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,8 +376,7 @@ fn observation_filters(
 ) {
     add_project_date_filters(alias, options, filters, params);
     if !options.obs_type.is_empty() {
-        let placeholders = std::iter::repeat("?")
-            .take(options.obs_type.len())
+        let placeholders = std::iter::repeat_n("?", options.obs_type.len())
             .collect::<Vec<_>>()
             .join(",");
         filters.push(format!("{alias}.type IN ({placeholders})"));

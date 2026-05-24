@@ -145,7 +145,7 @@ impl ClaudeMemMcp {
         {
             return Ok(text_result(text));
         }
-        Ok(json_text_result(&data)?)
+        json_text_result(&data)
     }
 
     #[tool(
@@ -168,7 +168,7 @@ impl ClaudeMemMcp {
             .worker
             .get_json("/api/timeline", query_pairs(query))
             .await?;
-        Ok(json_text_result(&data)?)
+        json_text_result(&data)
     }
 
     #[tool(
@@ -186,7 +186,7 @@ impl ClaudeMemMcp {
             .worker
             .post_json("/api/observations/batch", json!({ "ids": params.ids }))
             .await?;
-        Ok(json_text_result(&data)?)
+        json_text_result(&data)
     }
 
     #[tool(
@@ -215,7 +215,7 @@ impl ClaudeMemMcp {
                 }),
             )
             .await?;
-        Ok(json_text_result(&data)?)
+        json_text_result(&data)
     }
 
     #[tool(
@@ -254,6 +254,112 @@ impl ClaudeMemMcp {
         let path = PathBuf::from(params.file_path);
         let content = fs::read_to_string(&path).map_err(mcp_internal)?;
         Ok(text_result(format_outline(&path, &content)))
+    }
+
+    #[tool(
+        description = "Build a knowledge corpus from filtered observations. Creates a queryable knowledge agent. Params: name (required), description, project, types (comma-separated), concepts (comma-separated), files (comma-separated), query, dateStart, dateEnd, limit.",
+        annotations(title = "Build Corpus", destructive_hint = false, idempotent_hint = false)
+    )]
+    pub async fn build_corpus(
+        &self,
+        Parameters(params): Parameters<BuildCorpusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params("name must not be empty", None));
+        }
+        let body = build_corpus_body(&params);
+        let data = self.worker.post_json("/api/corpus", body).await?;
+        json_text_result(&data)
+    }
+
+    #[tool(
+        description = "List all knowledge corpora with their stats and priming status.",
+        annotations(title = "List Corpora", read_only_hint = true)
+    )]
+    pub async fn list_corpora(&self) -> Result<CallToolResult, McpError> {
+        let data = self.worker.get_json("/api/corpus", Vec::new()).await?;
+        // Worker wraps the list in `{content:[{type:text,text:...}]}`; unwrap
+        // when present so the MCP caller sees a clean JSON-encoded array.
+        if let Some(text) = data
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+        {
+            return Ok(text_result(text));
+        }
+        json_text_result(&data)
+    }
+
+    #[tool(
+        description = "Prime a knowledge corpus — creates an AI session loaded with the corpus knowledge. Must be called before query_corpus.",
+        annotations(title = "Prime Corpus", destructive_hint = false, idempotent_hint = false)
+    )]
+    pub async fn prime_corpus(
+        &self,
+        Parameters(params): Parameters<NameOnlyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params("name must not be empty", None));
+        }
+        let path = format!("/api/corpus/{}/prime", urlencode(&params.name));
+        let data = self.worker.post_json(&path, json!({})).await?;
+        json_text_result(&data)
+    }
+
+    #[tool(
+        description = "Ask a question to a primed knowledge corpus. The corpus must be primed first with prime_corpus. Params: name, question.",
+        annotations(title = "Query Corpus", read_only_hint = true)
+    )]
+    pub async fn query_corpus(
+        &self,
+        Parameters(params): Parameters<QueryCorpusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params("name must not be empty", None));
+        }
+        if params.question.trim().is_empty() {
+            return Err(McpError::invalid_params("question must not be empty", None));
+        }
+        let path = format!("/api/corpus/{}/query", urlencode(&params.name));
+        let data = self
+            .worker
+            .post_json(&path, json!({ "question": params.question }))
+            .await?;
+        json_text_result(&data)
+    }
+
+    #[tool(
+        description = "Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.",
+        annotations(title = "Rebuild Corpus", destructive_hint = false, idempotent_hint = false)
+    )]
+    pub async fn rebuild_corpus(
+        &self,
+        Parameters(params): Parameters<NameOnlyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params("name must not be empty", None));
+        }
+        let path = format!("/api/corpus/{}/rebuild", urlencode(&params.name));
+        let data = self.worker.post_json(&path, json!({})).await?;
+        json_text_result(&data)
+    }
+
+    #[tool(
+        description = "Create a fresh knowledge agent session for a corpus, clearing prior Q&A context. Use when conversation has drifted or after rebuilding.",
+        annotations(title = "Reprime Corpus", destructive_hint = false, idempotent_hint = false)
+    )]
+    pub async fn reprime_corpus(
+        &self,
+        Parameters(params): Parameters<NameOnlyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.name.trim().is_empty() {
+            return Err(McpError::invalid_params("name must not be empty", None));
+        }
+        let path = format!("/api/corpus/{}/reprime", urlencode(&params.name));
+        let data = self.worker.post_json(&path, json!({})).await?;
+        json_text_result(&data)
     }
 
     #[tool(
@@ -357,6 +463,88 @@ pub struct SmartOutlineParams {
 pub struct SmartUnfoldParams {
     pub file_path: String,
     pub symbol_name: String,
+}
+
+/// Build-corpus arguments. Mirrors the TS MCP `build_corpus` input schema —
+/// list fields accept either JSON arrays or comma-separated strings.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct BuildCorpusParams {
+    pub name: String,
+    pub description: Option<String>,
+    pub project: Option<String>,
+    pub types: Option<String>,
+    pub concepts: Option<String>,
+    pub files: Option<String>,
+    pub query: Option<String>,
+    #[serde(rename = "dateStart")]
+    pub date_start: Option<String>,
+    #[serde(rename = "dateEnd")]
+    pub date_end: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct NameOnlyParams {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct QueryCorpusParams {
+    pub name: String,
+    pub question: String,
+}
+
+fn build_corpus_body(params: &BuildCorpusParams) -> Value {
+    let mut body = serde_json::Map::new();
+    body.insert("name".into(), Value::String(params.name.clone()));
+    if let Some(d) = &params.description {
+        body.insert("description".into(), Value::String(d.clone()));
+    }
+    if let Some(p) = &params.project {
+        body.insert("project".into(), Value::String(p.clone()));
+    }
+    if let Some(t) = &params.types {
+        body.insert("types".into(), Value::String(t.clone()));
+    }
+    if let Some(c) = &params.concepts {
+        body.insert("concepts".into(), Value::String(c.clone()));
+    }
+    if let Some(f) = &params.files {
+        body.insert("files".into(), Value::String(f.clone()));
+    }
+    if let Some(q) = &params.query {
+        body.insert("query".into(), Value::String(q.clone()));
+    }
+    if let Some(d) = &params.date_start {
+        body.insert("date_start".into(), Value::String(d.clone()));
+    }
+    if let Some(d) = &params.date_end {
+        body.insert("date_end".into(), Value::String(d.clone()));
+    }
+    if let Some(l) = params.limit {
+        body.insert("limit".into(), Value::Number(l.into()));
+    }
+    Value::Object(body)
+}
+
+/// Minimal percent-encoder for a corpus name segment. The route validator
+/// rejects path separators upstream, so this only has to handle the small
+/// surface of characters the regex allows + any defensive escaping the HTTP
+/// client may need.
+fn urlencode(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    out
 }
 
 pub async fn run_stdio() -> Result<()> {

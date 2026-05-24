@@ -221,6 +221,45 @@ curl http://127.0.0.1:37777/api/branch/status
 curl -X POST http://127.0.0.1:37777/api/admin/shutdown
 ```
 
+### Corpus / knowledge agents
+
+A *corpus* is a named, persisted slice of observations filtered by project, types, concepts, files, query, and date range — used to build a queryable knowledge agent. Corpus files live at `~/.claude-mem/corpora/{name}.corpus.json` in a layout that is byte-compatible with the TypeScript v12 implementation, so a corpus written by either runtime can be read by the other.
+
+```bash
+# Build a corpus from filtered observations
+curl -X POST http://127.0.0.1:37777/api/corpus \
+  -H 'content-type: application/json' \
+  -d '{"name":"hooks","description":"Hook lifecycle work","project":"claude-mem","types":["decision","bugfix"],"limit":50}'
+
+# List corpora (metadata only, no observation arrays)
+curl http://127.0.0.1:37777/api/corpus
+
+# Read a corpus (metadata only — matches TS v12)
+curl http://127.0.0.1:37777/api/corpus/hooks
+
+# Re-run the saved filter to pick up new observations
+curl -X POST http://127.0.0.1:37777/api/corpus/hooks/rebuild
+
+# Delete
+curl -X DELETE http://127.0.0.1:37777/api/corpus/hooks
+```
+
+Priming and querying a corpus through a `claude` Q&A session is gated behind the `knowledge-agent` cargo feature (off by default — the routes still exist but return `501 Not Implemented` with an explanatory body when the feature is disabled).
+
+```bash
+# Build the worker with the knowledge-agent feature enabled
+cargo build --workspace --features knowledge-agent
+
+# Prime, query, reprime
+curl -X POST http://127.0.0.1:37777/api/corpus/hooks/prime
+curl -X POST http://127.0.0.1:37777/api/corpus/hooks/query \
+  -H 'content-type: application/json' \
+  -d '{"question":"What was the decision on exit codes?"}'
+curl -X POST http://127.0.0.1:37777/api/corpus/hooks/reprime
+```
+
+Priming shells out to the `claude` CLI (`claude --print --output-format stream-json [--resume <sid>] --disallowed-tools <csv>`) and parses the JSONL response stream. The disallowed-tools blocklist matches TS v12 (Bash, Read, Write, Edit, Grep, Glob, WebFetch, WebSearch, Task, NotebookEdit, AskUserQuestion, TodoWrite). The `claude` binary must be resolvable via `$PATH` or `CLAUDE_CODE_PATH` for the feature to function.
+
 ## Claude Hook CLI
 
 The unified CLI and standalone hook binary both accept platform, event, and hook payload on stdin. The unified `claude-mem hook ...` path is what installed integrations use.
@@ -265,6 +304,11 @@ The MCP server exposes memory save/search/timeline/fetch tools plus smart file h
 - `smart_search`
 - `smart_outline`
 - `smart_unfold`
+
+It also exposes the corpus / knowledge-agent surface, name-compatible with TS v12:
+
+- `build_corpus`, `list_corpora`, `rebuild_corpus`
+- `prime_corpus`, `query_corpus`, `reprime_corpus` (gated behind the `knowledge-agent` cargo feature; tools remain registered when the feature is off and surface the worker's 501 response)
 
 ## Folder CLAUDE.md Context
 

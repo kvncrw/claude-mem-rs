@@ -17,7 +17,7 @@ use rusqlite::{params, Connection, Result};
 pub fn parse_file_list(input: Option<&str>) -> Vec<String> {
     match input {
         None => Vec::new(),
-        Some(s) if s.is_empty() => Vec::new(),
+        Some("") => Vec::new(),
         Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
             Ok(serde_json::Value::Array(arr)) => arr
                 .into_iter()

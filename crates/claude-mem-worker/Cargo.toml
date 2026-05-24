@@ -12,6 +12,11 @@ workspace = true
 default = []
 chroma = []
 qdrant = []
+# Enables the KnowledgeAgent runtime (shell-out to the `claude` CLI). Off by
+# default so the worker has no runtime `claude` dependency unless explicitly
+# requested. When off, the prime/query/reprime HTTP routes still register but
+# return 501 Not Implemented.
+knowledge-agent = ["dep:async-trait"]
 
 [dependencies]
 claude-mem-core = { workspace = true }
@@ -27,6 +32,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
+async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tower = { workspace = true }
