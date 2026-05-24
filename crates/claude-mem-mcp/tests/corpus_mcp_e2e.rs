@@ -11,11 +11,9 @@
 //! `#[cfg(not(feature = "knowledge-agent"))]` so the suite stays green under
 //! `--features knowledge-agent` as well.
 
-use claude_mem_mcp::server::{
-    BuildCorpusParams, ClaudeMemMcp, NameOnlyParams, WorkerClient,
-};
 #[cfg(not(feature = "knowledge-agent"))]
 use claude_mem_mcp::server::QueryCorpusParams;
+use claude_mem_mcp::server::{BuildCorpusParams, ClaudeMemMcp, NameOnlyParams, WorkerClient};
 use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use rmcp::handler::server::tool::Parameters;
 use rmcp::model::{CallToolResult, RawContent};
@@ -31,7 +29,10 @@ use tokio::sync::Mutex;
 static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn result_text(result: &CallToolResult) -> String {
-    let content = result.content.as_ref().expect("tool result must have content");
+    let content = result
+        .content
+        .as_ref()
+        .expect("tool result must have content");
     match &content[0].raw {
         RawContent::Text(text) => text.text.clone(),
         other => panic!("expected text content, got {other:?}"),

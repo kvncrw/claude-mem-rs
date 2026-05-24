@@ -1,14 +1,14 @@
-use axum::body::{Body, to_bytes};
+use axum::body::{to_bytes, Body};
 use axum::http::{Method, Request, StatusCode};
 use claude_mem_core::db::observations::get::get_observations_by_ids;
-use claude_mem_core::db::observations::store::{StoreObservationResult, store_observation};
-use claude_mem_core::db::prompts::{PromptInput, get_user_prompts_by_ids, save_user_prompt};
+use claude_mem_core::db::observations::store::{store_observation, StoreObservationResult};
+use claude_mem_core::db::prompts::{get_user_prompts_by_ids, save_user_prompt, PromptInput};
 use claude_mem_core::db::sessions::{create_session, update_memory_session_id};
-use claude_mem_core::db::summaries::{SummaryInput, get_summaries_by_ids, store_summary};
+use claude_mem_core::db::summaries::{get_summaries_by_ids, store_summary, SummaryInput};
 use claude_mem_core::db::{self, open_or_create};
-use claude_mem_core::types::ObservationInput;
 use claude_mem_core::types::session::CreateSessionInput;
-use claude_mem_worker::http::router::{AppState, build_router_with_state};
+use claude_mem_core::types::ObservationInput;
+use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use claude_mem_worker::search::result_formatter::{ResultFormatter, SearchResults};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -344,10 +344,8 @@ fn documented_ts_v12_boot_context_fixture_matches_when_source_runtime_is_availab
         normalize_context_timestamp(&output),
         include_str!("fixtures/boot_context_ts_v12_expected.md").trim_end()
     );
-    assert!(
-        include_str!("fixtures/boot_context_ts_v12_deltas.md")
-            .contains("Rust uses a compact markdown table")
-    );
+    assert!(include_str!("fixtures/boot_context_ts_v12_deltas.md")
+        .contains("Rust uses a compact markdown table"));
 }
 
 struct TsRuntime {

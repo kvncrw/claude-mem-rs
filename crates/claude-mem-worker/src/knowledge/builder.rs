@@ -76,8 +76,7 @@ impl CorpusBuilder {
         // hint to SessionStore). Same project/types/limit filter that the search
         // already enforced — we re-trim here to mirror TS' explicit
         // `hydrateOptions` shape and to honour `limit` after hydration.
-        let mut observations: Vec<CorpusObservation> =
-            rows.into_iter().map(map_row).collect();
+        let mut observations: Vec<CorpusObservation> = rows.into_iter().map(map_row).collect();
         observations.sort_by(|a, b| {
             a.created_at_epoch
                 .cmp(&b.created_at_epoch)
@@ -269,8 +268,17 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        store_batch(conn, &memory_id, project, &observations, None, None, None, None)
-            .expect("store_batch");
+        store_batch(
+            conn,
+            &memory_id,
+            project,
+            &observations,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("store_batch");
     }
 
     #[test]
@@ -287,11 +295,16 @@ mod tests {
             limit: Some(100),
             ..Default::default()
         };
-        let corpus = builder.build(&conn, &store, "alpha-all", "all of alpha", filter).unwrap();
+        let corpus = builder
+            .build(&conn, &store, "alpha-all", "all of alpha", filter)
+            .unwrap();
         assert_eq!(corpus.stats.observation_count, 4);
         assert_eq!(corpus.observations.len(), 4);
         // Sorted ascending by epoch.
-        assert!(corpus.observations.windows(2).all(|w| w[0].created_at_epoch <= w[1].created_at_epoch));
+        assert!(corpus
+            .observations
+            .windows(2)
+            .all(|w| w[0].created_at_epoch <= w[1].created_at_epoch));
         // Token estimate is non-zero now that we've rendered.
         assert!(corpus.stats.token_estimate > 0);
         // Persisted.
@@ -319,7 +332,10 @@ mod tests {
             .unwrap();
         assert_eq!(corpus.stats.observation_count, 0);
         assert!(!corpus.stats.date_range.earliest.is_empty());
-        assert_eq!(corpus.stats.date_range.earliest, corpus.stats.date_range.latest);
+        assert_eq!(
+            corpus.stats.date_range.earliest,
+            corpus.stats.date_range.latest
+        );
     }
 
     #[test]
@@ -409,7 +425,10 @@ mod tests {
         assert_eq!(stats.observation_count, 3);
         assert_eq!(stats.type_breakdown.get("decision").copied(), Some(2));
         assert_eq!(stats.type_breakdown.get("bugfix").copied(), Some(1));
-        assert_eq!(stats.date_range.earliest, epoch_ms_to_iso(1_700_000_000_000));
+        assert_eq!(
+            stats.date_range.earliest,
+            epoch_ms_to_iso(1_700_000_000_000)
+        );
         assert_eq!(stats.date_range.latest, epoch_ms_to_iso(1_720_000_000_000));
     }
 }

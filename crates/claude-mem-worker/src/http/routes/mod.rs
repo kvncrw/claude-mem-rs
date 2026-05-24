@@ -25,8 +25,8 @@ use claude_mem_core::db::transactions::store_batch;
 use claude_mem_core::shared::tag_stripping::strip_private_tags;
 use claude_mem_core::types::session::CreateSessionInput;
 use claude_mem_core::types::{
-    CorpusFile, CorpusFilter, ObservationInput, ObservationRow, SdkSessionRow,
-    SessionSummaryRow, UserPromptRow,
+    CorpusFile, CorpusFilter, ObservationInput, ObservationRow, SdkSessionRow, SessionSummaryRow,
+    UserPromptRow,
 };
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -2965,7 +2965,13 @@ pub async fn corpus_rebuild(
     let corpus = {
         let conn = state.conn.lock().unwrap();
         builder
-            .build(&conn, &store, &name, &existing.description, existing.filter.clone())
+            .build(
+                &conn,
+                &store,
+                &name,
+                &existing.description,
+                existing.filter.clone(),
+            )
             .map_err(corpus_builder_error)?
     };
     Ok(Json(corpus_metadata(&corpus)))

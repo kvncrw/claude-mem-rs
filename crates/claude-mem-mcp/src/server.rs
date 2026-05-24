@@ -258,7 +258,11 @@ impl ClaudeMemMcp {
 
     #[tool(
         description = "Build a knowledge corpus from filtered observations. Creates a queryable knowledge agent. Params: name (required), description, project, types (comma-separated), concepts (comma-separated), files (comma-separated), query, dateStart, dateEnd, limit.",
-        annotations(title = "Build Corpus", destructive_hint = false, idempotent_hint = false)
+        annotations(
+            title = "Build Corpus",
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     pub async fn build_corpus(
         &self,
@@ -294,7 +298,11 @@ impl ClaudeMemMcp {
 
     #[tool(
         description = "Prime a knowledge corpus — creates an AI session loaded with the corpus knowledge. Must be called before query_corpus.",
-        annotations(title = "Prime Corpus", destructive_hint = false, idempotent_hint = false)
+        annotations(
+            title = "Prime Corpus",
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     pub async fn prime_corpus(
         &self,
@@ -332,7 +340,11 @@ impl ClaudeMemMcp {
 
     #[tool(
         description = "Rebuild a knowledge corpus from its stored filter — re-runs the search to refresh with new observations. Does not re-prime the session.",
-        annotations(title = "Rebuild Corpus", destructive_hint = false, idempotent_hint = false)
+        annotations(
+            title = "Rebuild Corpus",
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     pub async fn rebuild_corpus(
         &self,
@@ -348,7 +360,11 @@ impl ClaudeMemMcp {
 
     #[tool(
         description = "Create a fresh knowledge agent session for a corpus, clearing prior Q&A context. Use when conversation has drifted or after rebuilding.",
-        annotations(title = "Reprime Corpus", destructive_hint = false, idempotent_hint = false)
+        annotations(
+            title = "Reprime Corpus",
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     pub async fn reprime_corpus(
         &self,
