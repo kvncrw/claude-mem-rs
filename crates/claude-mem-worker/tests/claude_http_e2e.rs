@@ -253,17 +253,32 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     let (status, html) = get_text(app.clone(), "/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("claude-mem-rs"));
-    assert!(html.contains("Save Manual Memory"));
-    assert!(html.contains("Process Pending Queue"));
-    assert!(html.contains("Context Preview"));
     assert!(html.contains("Operational State"));
-    assert!(html.contains("format:'text'"));
-    assert!(html.contains("EventSource('/stream')"));
-    assert!(html.contains("/api/pending-queue"));
-    assert!(html.contains("/api/settings"));
-    assert!(html.contains("/api/logs?limit=200"));
-    assert!(html.contains("/api/branch/status"));
+    assert!(html.contains("Context Preview"));
+    assert!(html.contains("Live Events"));
+    assert!(html.contains("/_next/static/"));
     assert!(!html.contains("/api/prompts?limit=100"));
+
+    let asset_paths: Vec<&str> = html
+        .split('"')
+        .filter(|part| part.starts_with("/_next/static/") && part.ends_with(".js"))
+        .collect();
+    let asset_path = asset_paths
+        .first()
+        .expect("dashboard should reference a Next.js JavaScript asset");
+    let (status, asset) = get_text(app.clone(), asset_path).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!asset.is_empty());
+    let mut dashboard_bundle = String::new();
+    for asset_path in asset_paths {
+        let (status, asset) = get_text(app.clone(), asset_path).await;
+        assert_eq!(status, StatusCode::OK);
+        dashboard_bundle.push_str(&asset);
+    }
+    assert!(dashboard_bundle.contains("Save Settings"));
+    assert!(dashboard_bundle.contains("/api/settings"));
+    assert!(dashboard_bundle.contains("Clear Logs"));
+    assert!(dashboard_bundle.contains("/api/logs/clear"));
 
     let (status, settings) = json_request(
         app.clone(),
