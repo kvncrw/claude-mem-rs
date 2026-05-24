@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 
 pub mod agents;
 pub mod http;
+pub mod knowledge;
 pub mod queue;
 pub mod search;
 

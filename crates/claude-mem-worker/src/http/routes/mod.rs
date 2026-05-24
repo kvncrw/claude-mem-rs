@@ -25,7 +25,8 @@ use claude_mem_core::db::transactions::store_batch;
 use claude_mem_core::shared::tag_stripping::strip_private_tags;
 use claude_mem_core::types::session::CreateSessionInput;
 use claude_mem_core::types::{
-    ObservationInput, ObservationRow, SdkSessionRow, SessionSummaryRow, UserPromptRow,
+    CorpusFile, CorpusFilter, ObservationInput, ObservationRow, SdkSessionRow,
+    SessionSummaryRow, UserPromptRow,
 };
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,9 @@ use crate::agents::observer::{
     QueueProcessStats,
 };
 use crate::agents::response_processor::parse_summary;
+use crate::knowledge::{CorpusBuilder, CorpusStore, CorpusStoreError};
+#[cfg(feature = "knowledge-agent")]
+use crate::knowledge::{KnowledgeAgent, KnowledgeAgentError};
 #[cfg(feature = "qdrant")]
 use crate::search::qdrant::{
     MemoryPointRefs, PromptPoint, QdrantClient, QdrantConfig, QdrantStatus,
@@ -2092,9 +2096,7 @@ fn store_generated_summary(
         fallback_summary_input(
             memory_session_id,
             session.project,
-            prompt
-                .map(|p| p.prompt_text)
-                .or_else(|| session.user_prompt),
+            prompt.map(|p| p.prompt_text).or(session.user_prompt),
             prompt_number,
             observations,
             source,
@@ -2105,6 +2107,7 @@ fn store_generated_summary(
     store_summary(conn, &input).map_err(ApiError::internal)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fallback_summary_input(
     memory_session_id: String,
     project: String,
@@ -2357,7 +2360,7 @@ fn log_path() -> PathBuf {
     claude_mem_home().join("claude-mem.log")
 }
 
-fn read_json_file(path: &PathBuf, default: Value) -> Result<Value, ApiError> {
+fn read_json_file(path: &std::path::Path, default: Value) -> Result<Value, ApiError> {
     match std::fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text).map_err(ApiError::internal),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default),
@@ -2365,7 +2368,7 @@ fn read_json_file(path: &PathBuf, default: Value) -> Result<Value, ApiError> {
     }
 }
 
-fn write_json_file(path: &PathBuf, value: &Value) -> Result<(), ApiError> {
+fn write_json_file(path: &std::path::Path, value: &Value) -> Result<(), ApiError> {
     ensure_parent(path)?;
     std::fs::write(
         path,
@@ -2374,7 +2377,7 @@ fn write_json_file(path: &PathBuf, value: &Value) -> Result<(), ApiError> {
     .map_err(ApiError::internal)
 }
 
-fn ensure_parent(path: &PathBuf) -> Result<(), ApiError> {
+fn ensure_parent(path: &std::path::Path) -> Result<(), ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(ApiError::internal)?;
     }
@@ -2515,7 +2518,6 @@ fn search_options_from_query(query: &HashMap<String, String>, q: &str) -> Strate
             Some("auto") => Some(SearchStrategyHint::Auto),
             _ => None,
         },
-        ..Default::default()
     }
 }
 
@@ -2821,4 +2823,387 @@ fn prompt_points_by_ids(
             .unwrap_or(usize::MAX)
     });
     Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Corpus routes — port of TS `src/services/worker/http/routes/CorpusRoutes.ts`
+// ---------------------------------------------------------------------------
+
+const ALLOWED_CORPUS_TYPES: &[&str] = &[
+    "decision",
+    "bugfix",
+    "feature",
+    "refactor",
+    "discovery",
+    "change",
+];
+
+/// Request body for `POST /api/corpus` (build) — `name` is required; every
+/// other field maps onto `CorpusFilter`.
+#[derive(Debug, Deserialize)]
+pub struct CorpusBuildRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub project: Option<String>,
+    #[serde(default)]
+    pub types: Option<Value>,
+    #[serde(default)]
+    pub concepts: Option<Value>,
+    #[serde(default)]
+    pub files: Option<Value>,
+    pub query: Option<String>,
+    pub date_start: Option<String>,
+    pub date_end: Option<String>,
+    pub limit: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CorpusQueryRequest {
+    pub question: Option<String>,
+}
+
+/// POST /api/corpus — build a new corpus.
+pub async fn corpus_build(
+    State(state): State<AppState>,
+    Json(req): Json<CorpusBuildRequest>,
+) -> ApiResult<Value> {
+    let name = req
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "Missing required field: name. Example body: {\"name\":\"my-corpus\",\"query\":\"hooks\",\"limit\":100}",
+            )
+        })?;
+    let description = req.description.unwrap_or_default();
+    let types = coerce_string_array(req.types.as_ref(), "types")?;
+    if let Some(values) = &types {
+        for value in values {
+            if !ALLOWED_CORPUS_TYPES.contains(&value.as_str()) {
+                return Err(ApiError::bad_request(
+                    "types must contain valid observation types",
+                ));
+            }
+        }
+    }
+    let concepts = coerce_string_array(req.concepts.as_ref(), "concepts")?;
+    let files = coerce_string_array(req.files.as_ref(), "files")?;
+    let limit = coerce_positive_int(req.limit.as_ref(), "limit")?;
+
+    let filter = CorpusFilter {
+        project: req.project,
+        types: types.filter(|v| !v.is_empty()),
+        concepts: concepts.filter(|v| !v.is_empty()),
+        files: files.filter(|v| !v.is_empty()),
+        query: req.query.filter(|q| !q.is_empty()),
+        date_start: req.date_start,
+        date_end: req.date_end,
+        limit,
+    };
+
+    let store = CorpusStore::default();
+    let builder = CorpusBuilder::new();
+    let corpus = {
+        let conn = state.conn.lock().unwrap();
+        builder
+            .build(&conn, &store, name, &description, filter)
+            .map_err(corpus_builder_error)?
+    };
+    Ok(Json(corpus_metadata(&corpus)))
+}
+
+/// GET /api/corpus — list every corpus.
+pub async fn corpus_list(State(_state): State<AppState>) -> ApiResult<Value> {
+    let store = CorpusStore::default();
+    let entries = store.list().map_err(corpus_store_error)?;
+    // Match TS' MCP-CallToolResult-shaped envelope. See TS CorpusRoutes.ts
+    // `handleListCorpora` for the rationale (#1700).
+    Ok(Json(json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".into())
+        }]
+    })))
+}
+
+/// GET /api/corpus/:name — return metadata sans `observations`.
+pub async fn corpus_get(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Value> {
+    let store = CorpusStore::default();
+    let corpus = store
+        .read(&name)
+        .map_err(corpus_store_error)?
+        .ok_or_else(|| corpus_not_found(&store, &name))?;
+    Ok(Json(corpus_metadata(&corpus)))
+}
+
+/// DELETE /api/corpus/:name
+pub async fn corpus_delete(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Value> {
+    let store = CorpusStore::default();
+    let existed = store.delete(&name).map_err(corpus_store_error)?;
+    if !existed {
+        return Err(corpus_not_found(&store, &name));
+    }
+    Ok(Json(json!({ "success": true })))
+}
+
+/// POST /api/corpus/:name/rebuild
+pub async fn corpus_rebuild(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Value> {
+    let store = CorpusStore::default();
+    let existing = store
+        .read(&name)
+        .map_err(corpus_store_error)?
+        .ok_or_else(|| corpus_not_found(&store, &name))?;
+    let builder = CorpusBuilder::new();
+    let corpus = {
+        let conn = state.conn.lock().unwrap();
+        builder
+            .build(&conn, &store, &name, &existing.description, existing.filter.clone())
+            .map_err(corpus_builder_error)?
+    };
+    Ok(Json(corpus_metadata(&corpus)))
+}
+
+/// POST /api/corpus/:name/prime — feature-gated; returns 501 when off.
+pub async fn corpus_prime(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    #[cfg(feature = "knowledge-agent")]
+    {
+        let store = CorpusStore::default();
+        let mut corpus = store
+            .read(&name)
+            .map_err(corpus_store_error)?
+            .ok_or_else(|| corpus_not_found(&store, &name))?;
+        let agent = KnowledgeAgent::with_cli().map_err(knowledge_agent_error)?;
+        let session_id = agent
+            .prime(&mut corpus, &store)
+            .await
+            .map_err(knowledge_agent_error)?;
+        Ok(Json(
+            json!({ "session_id": session_id, "name": corpus.name }),
+        ))
+    }
+    #[cfg(not(feature = "knowledge-agent"))]
+    {
+        let _ = name;
+        Err(knowledge_agent_disabled())
+    }
+}
+
+/// POST /api/corpus/:name/query — feature-gated; returns 501 when off.
+pub async fn corpus_query(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<CorpusQueryRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let question = req
+        .question
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "Missing required field: question. Example: {\"question\":\"What changed?\"}",
+            )
+        })?;
+
+    #[cfg(feature = "knowledge-agent")]
+    {
+        let store = CorpusStore::default();
+        let mut corpus = store
+            .read(&name)
+            .map_err(corpus_store_error)?
+            .ok_or_else(|| corpus_not_found(&store, &name))?;
+        let agent = KnowledgeAgent::with_cli().map_err(knowledge_agent_error)?;
+        let result = agent
+            .query(&mut corpus, &store, question)
+            .await
+            .map_err(knowledge_agent_error)?;
+        Ok(Json(
+            json!({ "answer": result.answer, "session_id": result.session_id }),
+        ))
+    }
+    #[cfg(not(feature = "knowledge-agent"))]
+    {
+        let _ = (name, question);
+        Err(knowledge_agent_disabled())
+    }
+}
+
+/// POST /api/corpus/:name/reprime — feature-gated; returns 501 when off.
+pub async fn corpus_reprime(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    #[cfg(feature = "knowledge-agent")]
+    {
+        let store = CorpusStore::default();
+        let mut corpus = store
+            .read(&name)
+            .map_err(corpus_store_error)?
+            .ok_or_else(|| corpus_not_found(&store, &name))?;
+        let agent = KnowledgeAgent::with_cli().map_err(knowledge_agent_error)?;
+        let session_id = agent
+            .reprime(&mut corpus, &store)
+            .await
+            .map_err(knowledge_agent_error)?;
+        Ok(Json(
+            json!({ "session_id": session_id, "name": corpus.name }),
+        ))
+    }
+    #[cfg(not(feature = "knowledge-agent"))]
+    {
+        let _ = name;
+        Err(knowledge_agent_disabled())
+    }
+}
+
+// --- helpers --------------------------------------------------------------
+
+fn corpus_metadata(corpus: &CorpusFile) -> Value {
+    // Mirrors TS' `{ observations, ...metadata } = corpus` destructure.
+    let mut obj = serde_json::to_value(corpus).unwrap_or(Value::Null);
+    if let Some(map) = obj.as_object_mut() {
+        map.remove("observations");
+    }
+    obj
+}
+
+fn corpus_not_found(store: &CorpusStore, name: &str) -> ApiError {
+    let available: Vec<String> = store
+        .list()
+        .map(|entries| entries.into_iter().map(|e| e.name).collect())
+        .unwrap_or_default();
+    ApiError {
+        status: StatusCode::NOT_FOUND,
+        message: format!(
+            "Corpus \"{name}\" not found. Available: {}",
+            if available.is_empty() {
+                "(none)".to_owned()
+            } else {
+                available.join(", ")
+            }
+        ),
+    }
+}
+
+fn corpus_store_error(error: CorpusStoreError) -> ApiError {
+    match error {
+        CorpusStoreError::InvalidName => ApiError::bad_request(error.to_string()),
+        other => ApiError::internal(other),
+    }
+}
+
+fn corpus_builder_error(error: crate::knowledge::builder::CorpusBuilderError) -> ApiError {
+    use crate::knowledge::builder::CorpusBuilderError;
+    match error {
+        CorpusBuilderError::Store(e) => corpus_store_error(e),
+        other => ApiError::internal(other),
+    }
+}
+
+#[cfg(feature = "knowledge-agent")]
+fn knowledge_agent_error(error: KnowledgeAgentError) -> ApiError {
+    match error {
+        KnowledgeAgentError::NotPrimed(_) => ApiError::bad_request(error.to_string()),
+        KnowledgeAgentError::ExecutableNotFound => ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: error.to_string(),
+        },
+        other => ApiError::internal(other),
+    }
+}
+
+#[cfg(not(feature = "knowledge-agent"))]
+fn knowledge_agent_disabled() -> ApiError {
+    ApiError {
+        status: StatusCode::NOT_IMPLEMENTED,
+        message: "Knowledge agent endpoints are not available in this build. Rebuild claude-mem-worker with --features knowledge-agent to enable prime/query/reprime.".into(),
+    }
+}
+
+fn coerce_string_array(
+    value: Option<&Value>,
+    field: &str,
+) -> Result<Option<Vec<String>>, ApiError> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    match raw {
+        Value::Null => Ok(None),
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(text) = item.as_str() else {
+                    return Err(ApiError::bad_request(format!(
+                        "{field} must be an array of strings"
+                    )));
+                };
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    out.push(trimmed.to_owned());
+                }
+            }
+            Ok(Some(out))
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            // Try JSON array first, fall back to CSV.
+            if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                return coerce_string_array(Some(&parsed), field);
+            }
+            let parts: Vec<String> = trimmed
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            Ok(Some(parts))
+        }
+        _ => Err(ApiError::bad_request(format!(
+            "{field} must be an array of strings"
+        ))),
+    }
+}
+
+fn coerce_positive_int(value: Option<&Value>, field: &str) -> Result<Option<i64>, ApiError> {
+    let Some(raw) = value else { return Ok(None) };
+    match raw {
+        Value::Null => Ok(None),
+        Value::Number(n) => n
+            .as_i64()
+            .filter(|n| *n > 0)
+            .map(Some)
+            .ok_or_else(|| ApiError::bad_request(format!("{field} must be a positive integer"))),
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            trimmed
+                .parse::<i64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .map(Some)
+                .ok_or_else(|| ApiError::bad_request(format!("{field} must be a positive integer")))
+        }
+        _ => Err(ApiError::bad_request(format!(
+            "{field} must be a positive integer"
+        ))),
+    }
 }

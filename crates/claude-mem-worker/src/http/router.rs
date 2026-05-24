@@ -11,13 +11,14 @@ use tokio::sync::{broadcast, Notify};
 
 use super::routes::{
     admin_doctor, admin_restart, admin_shutdown, branch_status, branch_switch, branch_update,
-    changes, context_inject, context_preview, context_recent, context_timeline, decisions,
-    export_data, health, how_it_works, import_data, instructions, logs_clear, logs_get, mcp_status,
-    mcp_toggle, memory_save, observation_get, observations_batch, observations_by_file,
-    observations_get, pending_queue_all_clear, pending_queue_failed_clear, pending_queue_get,
-    pending_queue_process, processing_set, processing_status, projects, prompt_get, prompts_get,
-    readiness, root_viewer, sdk_sessions_batch, search, search_by_concept, search_by_file,
-    search_by_type, search_help, search_observations_route, search_prompts_route,
+    changes, context_inject, context_preview, context_recent, context_timeline, corpus_build,
+    corpus_delete, corpus_get, corpus_list, corpus_prime, corpus_query, corpus_rebuild,
+    corpus_reprime, decisions, export_data, health, how_it_works, import_data, instructions,
+    logs_clear, logs_get, mcp_status, mcp_toggle, memory_save, observation_get, observations_batch,
+    observations_by_file, observations_get, pending_queue_all_clear, pending_queue_failed_clear,
+    pending_queue_get, pending_queue_process, processing_set, processing_status, projects,
+    prompt_get, prompts_get, readiness, root_viewer, sdk_sessions_batch, search, search_by_concept,
+    search_by_file, search_by_type, search_help, search_observations_route, search_prompts_route,
     search_sessions_route, semantic_context, session_get, session_legacy_complete,
     session_legacy_delete, session_legacy_init, session_legacy_observations, session_legacy_status,
     session_legacy_summarize, sessions_complete, sessions_init, sessions_observations,
@@ -177,6 +178,15 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/branch/status", get(branch_status))
         .route("/api/branch/switch", post(branch_switch))
         .route("/api/branch/update", post(branch_update))
+        .route("/api/corpus", get(corpus_list).post(corpus_build))
+        .route(
+            "/api/corpus/:name",
+            get(corpus_get).delete(corpus_delete),
+        )
+        .route("/api/corpus/:name/rebuild", post(corpus_rebuild))
+        .route("/api/corpus/:name/prime", post(corpus_prime))
+        .route("/api/corpus/:name/query", post(corpus_query))
+        .route("/api/corpus/:name/reprime", post(corpus_reprime))
         .merge(qdrant_routes())
         .with_state(state)
 }

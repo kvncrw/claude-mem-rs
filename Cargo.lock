@@ -272,6 +272,7 @@ dependencies = [
 name = "claude-mem-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bon",
  "claude-mem-core",
