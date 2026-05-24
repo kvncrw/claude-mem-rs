@@ -77,6 +77,30 @@ pub fn build_observation_prompt(obs: &ObservationPromptInput) -> String {
 Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 If the observed outcome explicitly asks to remember, store, persist, or recall a durable marker or fact, record it as an observation.
+Each stored observation must include a specific <title>, at least one concrete <fact>, and a <narrative> explaining what changed or was learned.
+Do not emit title-only or generic tool-use observations. Titles like "Bash tool use" are invalid unless the durable fact is only that a shell command ran.
+
+Use this exact XML shape:
+
+<observation>
+  <type>discovery</type>
+  <title>short durable title</title>
+  <subtitle>one-sentence context</subtitle>
+  <facts>
+    <fact>specific durable fact from the event</fact>
+  </facts>
+  <narrative>concise explanation of why the fact matters for future work</narrative>
+  <concepts>
+    <concept>searchable-concept</concept>
+  </concepts>
+  <files_read>
+    <file>/path/read</file>
+  </files_read>
+  <files_modified>
+    <file>/path/modified</file>
+  </files_modified>
+</observation>
+
 Do not use tools. Do not inspect files. You are observing the provided event only.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded."#,
         obs.tool_name, occurred_at, cwd, obs.tool_input, obs.tool_output

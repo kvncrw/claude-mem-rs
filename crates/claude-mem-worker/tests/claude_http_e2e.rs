@@ -400,6 +400,7 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     let (status, doctor) = get_json(app.clone(), "/api/admin/doctor").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(doctor["ok"], true);
+    assert!(doctor["observer"]["provider"].as_str().is_some());
     assert_eq!(doctor["counts"]["summaries"], 1);
     assert!(doctor["activity"]["observations15m"].as_i64().unwrap() >= 1);
     assert!(doctor["activity"]["summaries15m"].as_i64().unwrap() >= 1);

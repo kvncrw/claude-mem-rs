@@ -230,9 +230,10 @@ pub async fn process_pending_for_session(
             stats.messages_processed += 1;
             stats.observations_inserted += processed_response.storage.inserted as usize;
             stats.summaries_inserted += usize::from(processed_response.summary.is_some());
-            stats
-                .observation_ids
-                .extend(processed_response.storage.observation_ids);
+            push_unique_observation_ids(
+                &mut stats.observation_ids,
+                processed_response.storage.observation_ids,
+            );
         }
 
         processed += 1;
@@ -316,9 +317,10 @@ pub async fn process_session_init(
         )?;
         stats.observations_inserted = processed_response.storage.inserted as usize;
         stats.summaries_inserted = usize::from(processed_response.summary.is_some());
-        stats
-            .observation_ids
-            .extend(processed_response.storage.observation_ids);
+        push_unique_observation_ids(
+            &mut stats.observation_ids,
+            processed_response.storage.observation_ids,
+        );
     }
     Ok(stats)
 }
@@ -1029,7 +1031,15 @@ fn merge_stats(target: &mut QueueProcessStats, source: QueueProcessStats) {
     target.messages_failed += source.messages_failed;
     target.observations_inserted += source.observations_inserted;
     target.summaries_inserted += source.summaries_inserted;
-    target.observation_ids.extend(source.observation_ids);
+    push_unique_observation_ids(&mut target.observation_ids, source.observation_ids);
+}
+
+fn push_unique_observation_ids(target: &mut Vec<i64>, source: Vec<i64>) {
+    for id in source {
+        if !target.contains(&id) {
+            target.push(id);
+        }
+    }
 }
 
 fn compact_json(value: Option<&Value>) -> String {
@@ -1122,5 +1132,12 @@ mod tests {
                 "dontAsk"
             ]
         );
+    }
+
+    #[test]
+    fn push_unique_observation_ids_preserves_order_without_duplicates() {
+        let mut ids = vec![10, 11];
+        push_unique_observation_ids(&mut ids, vec![11, 12, 10, 13]);
+        assert_eq!(ids, vec![10, 11, 12, 13]);
     }
 }

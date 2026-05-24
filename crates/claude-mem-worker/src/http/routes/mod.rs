@@ -243,6 +243,7 @@ pub async fn admin_doctor(State(state): State<AppState>) -> ApiResult<Value> {
         let conn = state.conn.lock().unwrap();
         (db_stats_locked(&conn)?, db_activity_locked(&conn)?)
     };
+    let observer = ObserverConfig::from_env();
     let db_path = default_db_path();
     Ok(Json(json!({
         "ok": true,
@@ -258,6 +259,14 @@ pub async fn admin_doctor(State(state): State<AppState>) -> ApiResult<Value> {
         "qdrant": {
             "compiled": cfg!(feature = "qdrant"),
             "enabled": qdrant_enabled_env()
+        },
+        "observer": {
+            "provider": observer.provider,
+            "model": observer.model_id,
+            "tierRoutingEnabled": observer.tier_routing_enabled,
+            "simpleModel": observer.simple_model,
+            "summaryModel": observer.summary_model,
+            "maxMessages": observer.max_messages
         },
         "settingsPath": settings_path(),
         "logPath": log_path()

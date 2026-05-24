@@ -51,6 +51,7 @@ async fn run() -> Result<i32> {
         "hook" => claude_mem_supervisor::hooks::run_hook_from_env().await,
         "mcp" => claude_mem_mcp::server::run_stdio().await.map(|_| 0),
         "worker" => {
+            claude_mem_supervisor::runtime_settings::apply_worker_settings_env();
             init_worker_tracing();
             claude_mem_worker::run_from_env()
                 .await

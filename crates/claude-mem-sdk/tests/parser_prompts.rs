@@ -63,6 +63,8 @@ fn prompt_builders_emit_non_empty_contracts() {
         "Return either one or more <observation>...</observation> blocks, or an empty response"
     ));
     assert!(observation.contains("Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection"));
+    assert!(observation.contains("at least one concrete <fact>"));
+    assert!(observation.contains("Do not emit title-only or generic tool-use observations"));
     assert!(observation.contains(
         "Never reply with prose such as \"Skipping\", \"No substantive tool executions\""
     ));
