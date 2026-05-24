@@ -1,7 +1,7 @@
 //! Axum router.
 
-use axum::routing::{get, post};
 use axum::Router;
+use axum::routing::{get, post};
 use claude_mem_core::db;
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -9,9 +9,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 use super::routes::{
-    admin_shutdown, context_inject, health, memory_save, observations_batch, readiness, search,
+    admin_doctor, admin_shutdown, branch_status, branch_switch, branch_update, context_inject,
+    export_data, health, import_data, logs_clear, logs_get, memory_save, observations_batch,
+    observations_get, processing_status, projects, readiness, root_viewer, search,
     search_by_concept, search_by_file, search_by_type, semantic_context, sessions_complete,
-    sessions_init, sessions_observations, timeline, version,
+    sessions_init, sessions_observations, sessions_status, sessions_summarize, settings_get,
+    settings_post, stats, stream, summaries_get, timeline, version,
 };
 #[cfg(feature = "qdrant")]
 use super::routes::{qdrant_health, qdrant_reindex};
@@ -65,13 +68,19 @@ pub fn build_router() -> Router {
 
 pub fn build_router_with_state(state: AppState) -> Router {
     Router::new()
+        .route("/", get(root_viewer))
+        .route("/health", get(health))
+        .route("/stream", get(stream))
         .route("/api/health", get(health))
         .route("/api/readiness", get(readiness))
         .route("/api/version", get(version))
+        .route("/api/admin/doctor", get(admin_doctor))
         .route("/api/admin/shutdown", post(admin_shutdown))
         .route("/api/sessions/init", post(sessions_init))
         .route("/api/sessions/observations", post(sessions_observations))
         .route("/api/sessions/complete", post(sessions_complete))
+        .route("/api/sessions/summarize", post(sessions_summarize))
+        .route("/api/sessions/status", get(sessions_status))
         .route("/api/memory/save", post(memory_save))
         .route("/api/context/inject", get(context_inject))
         .route("/api/context/semantic", post(semantic_context))
@@ -80,7 +89,20 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/search/by-file", get(search_by_file))
         .route("/api/search/by-concept", get(search_by_concept))
         .route("/api/search/by-type", get(search_by_type))
+        .route("/api/observations", get(observations_get))
+        .route("/api/summaries", get(summaries_get))
         .route("/api/observations/batch", post(observations_batch))
+        .route("/api/stats", get(stats))
+        .route("/api/projects", get(projects))
+        .route("/api/processing-status", get(processing_status))
+        .route("/api/export", get(export_data))
+        .route("/api/import", post(import_data))
+        .route("/api/settings", get(settings_get).post(settings_post))
+        .route("/api/logs", get(logs_get))
+        .route("/api/logs/clear", post(logs_clear))
+        .route("/api/branch/status", get(branch_status))
+        .route("/api/branch/switch", post(branch_switch))
+        .route("/api/branch/update", post(branch_update))
         .merge(qdrant_routes())
         .with_state(state)
 }

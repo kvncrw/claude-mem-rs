@@ -1,27 +1,36 @@
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
-use claude_mem_core::context::formatters::{format_observation, FormatOptions};
-use claude_mem_core::context::observation_compiler::{query_observations, ObservationQuery};
+use axum::http::header;
+use axum::response::{Html, IntoResponse, Response};
+use claude_mem_core::context::formatters::{FormatOptions, format_observation};
+use claude_mem_core::context::observation_compiler::{ObservationQuery, query_observations};
 use claude_mem_core::db::observations::get::{
     get_observation_by_id, get_observations_by_file_path, get_observations_by_ids,
+    get_observations_for_session,
 };
 use claude_mem_core::db::prompts::{
-    get_prompt_number_from_user_prompts, save_user_prompt, PromptInput,
+    PromptInput, get_latest_user_prompt, get_prompt_number_from_user_prompts,
+    get_user_prompts_by_ids, save_user_prompt,
 };
 use claude_mem_core::db::sessions::{
     create_session, get_session_by_content_id, mark_session_completed, update_memory_session_id,
 };
+use claude_mem_core::db::summaries::{
+    SummaryInput, get_summaries_by_ids, get_summary_for_session, store_summary,
+};
 use claude_mem_core::db::transactions::store_batch;
 use claude_mem_core::shared::tag_stripping::strip_private_tags;
 use claude_mem_core::types::session::CreateSessionInput;
-use claude_mem_core::types::ObservationInput;
+use claude_mem_core::types::{ObservationInput, ObservationRow, SessionSummaryRow, UserPromptRow};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Command;
 
-use super::router::AppState;
+use super::router::{AppState, default_db_path};
+use crate::agents::response_processor::parse_summary;
 #[cfg(feature = "qdrant")]
 use crate::search::qdrant::{QdrantClient, QdrantConfig, QdrantStatus};
 use crate::search::result_formatter::{ResultFormatter, SearchResults};
@@ -41,6 +50,13 @@ impl ApiError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: message.into(),
         }
     }
@@ -101,11 +117,75 @@ pub async fn version() -> Json<Value> {
     Json(json!({ "version": env!("CARGO_PKG_VERSION") }))
 }
 
+pub async fn root_viewer() -> Html<&'static str> {
+    Html(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>claude-mem-rs</title>
+  <style>
+    body{font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f8fafc;color:#111827}
+    header{padding:20px 24px;border-bottom:1px solid #d1d5db;background:#fff}
+    main{max-width:1080px;margin:0 auto;padding:24px;display:grid;gap:16px}
+    section{background:#fff;border:1px solid #d1d5db;border-radius:8px;padding:16px}
+    pre{white-space:pre-wrap;overflow:auto;background:#111827;color:#f9fafb;border-radius:6px;padding:12px}
+  </style>
+</head>
+<body>
+  <header><h1>claude-mem-rs</h1></header>
+  <main>
+    <section><h2>Status</h2><pre id="status">Loading...</pre></section>
+    <section><h2>Stream</h2><pre id="stream"></pre></section>
+  </main>
+  <script>
+    fetch('/api/stats').then(r=>r.json()).then(j=>status.textContent=JSON.stringify(j,null,2));
+    const es = new EventSource('/stream');
+    es.onmessage = e => stream.textContent += e.data + "\n";
+    es.addEventListener('initial_load', e => stream.textContent += e.data + "\n");
+  </script>
+</body>
+</html>"#,
+    )
+}
+
+pub async fn stream(State(state): State<AppState>) -> impl IntoResponse {
+    let payload = match snapshot(&state, 10) {
+        Ok(value) => value,
+        Err(error) => json!({ "error": error.message }),
+    };
+    let body = format!("event: initial_load\ndata: {}\n\n", payload);
+    ([(header::CONTENT_TYPE, "text/event-stream")], body)
+}
+
 pub async fn admin_shutdown(State(state): State<AppState>) -> Json<Value> {
     if let Some(shutdown) = &state.shutdown {
         shutdown.notify_waiters();
     }
     Json(json!({ "success": true }))
+}
+
+pub async fn admin_doctor(State(state): State<AppState>) -> ApiResult<Value> {
+    let stats = db_stats(&state)?;
+    let db_path = default_db_path();
+    Ok(Json(json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "pid": std::process::id(),
+        "platform": std::env::consts::OS,
+        "dbPath": db_path,
+        "dbReachable": true,
+        "initialized": state.initialized,
+        "mcpReady": state.mcp_ready,
+        "counts": stats,
+        "qdrant": {
+            "compiled": cfg!(feature = "qdrant"),
+            "enabled": qdrant_enabled_env()
+        },
+        "settingsPath": settings_path(),
+        "logPath": log_path()
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -299,15 +379,81 @@ pub async fn sessions_complete(
     State(state): State<AppState>,
     Json(req): Json<SessionCompleteRequest>,
 ) -> ApiResult<Value> {
-    let conn = state.conn.lock().unwrap();
-    if let Some(session) =
-        get_session_by_content_id(&conn, &req.content_session_id).map_err(ApiError::internal)?
-    {
+    let mut summary_id = None;
+    let completed = {
+        let conn = state.conn.lock().unwrap();
+        let Some(session) = get_session_by_content_id(&conn, &req.content_session_id)
+            .map_err(ApiError::internal)?
+        else {
+            return Ok(Json(json!({ "success": true, "completed": false })));
+        };
         mark_session_completed(&conn, session.id).map_err(ApiError::internal)?;
-        Ok(Json(json!({ "success": true, "completed": true })))
-    } else {
-        Ok(Json(json!({ "success": true, "completed": false })))
+        if let Some(memory_session_id) = session.memory_session_id.as_deref() {
+            let existing =
+                get_summary_for_session(&conn, memory_session_id).map_err(ApiError::internal)?;
+            if existing.is_empty() {
+                summary_id = Some(store_generated_summary(
+                    &conn,
+                    &req.content_session_id,
+                    None,
+                )?);
+            }
+        }
+        true
+    };
+    Ok(Json(json!({
+        "success": true,
+        "completed": completed,
+        "summaryId": summary_id
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummarizeRequest {
+    content_session_id: String,
+    summary: Option<String>,
+    last_assistant_message: Option<String>,
+}
+
+pub async fn sessions_summarize(
+    State(state): State<AppState>,
+    Json(req): Json<SessionSummarizeRequest>,
+) -> ApiResult<Value> {
+    if req.content_session_id.trim().is_empty() {
+        return Err(ApiError::bad_request("contentSessionId is required"));
     }
+    let source = req.summary.or(req.last_assistant_message);
+    let conn = state.conn.lock().unwrap();
+    let id = store_generated_summary(&conn, &req.content_session_id, source.as_deref())?;
+    Ok(Json(json!({ "success": true, "summaryId": id })))
+}
+
+pub async fn sessions_status(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Value> {
+    let content_session_id = query
+        .get("contentSessionId")
+        .or_else(|| query.get("content_session_id"))
+        .ok_or_else(|| ApiError::bad_request("contentSessionId is required"))?;
+    let conn = state.conn.lock().unwrap();
+    let Some(session) =
+        get_session_by_content_id(&conn, content_session_id).map_err(ApiError::internal)?
+    else {
+        return Ok(Json(json!({ "exists": false })));
+    };
+    let summaries = if let Some(memory_session_id) = session.memory_session_id.as_deref() {
+        get_summary_for_session(&conn, memory_session_id).map_err(ApiError::internal)?
+    } else {
+        Vec::new()
+    };
+    Ok(Json(json!({
+        "exists": true,
+        "session": session,
+        "summaryCount": summaries.len(),
+        "hasSummary": !summaries.is_empty()
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -717,6 +863,603 @@ pub async fn observations_batch(
     let conn = state.conn.lock().unwrap();
     let rows = get_observations_by_ids(&conn, &req.ids).map_err(ApiError::internal)?;
     Ok(Json(json!({ "observations": rows })))
+}
+
+pub async fn observations_get(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let ids = list_ids(
+        &conn,
+        "observations",
+        query.get("project").map(String::as_str),
+        parse_limit(query.get("limit"), 100),
+    )?;
+    let rows = get_observations_by_ids(&conn, &ids).map_err(ApiError::internal)?;
+    Ok(Json(json!({ "observations": rows, "count": rows.len() })))
+}
+
+pub async fn summaries_get(
+    State(state): State<AppState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let ids = list_ids(
+        &conn,
+        "session_summaries",
+        query.get("project").map(String::as_str),
+        parse_limit(query.get("limit"), 100),
+    )?;
+    let rows = get_summaries_by_ids(&conn, &ids).map_err(ApiError::internal)?;
+    Ok(Json(json!({ "summaries": rows, "count": rows.len() })))
+}
+
+pub async fn stats(State(state): State<AppState>) -> ApiResult<Value> {
+    Ok(Json(db_stats(&state)?))
+}
+
+pub async fn projects(State(state): State<AppState>) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT project, COUNT(*) AS observation_count, MAX(created_at_epoch) AS latest_epoch
+             FROM observations
+             GROUP BY project
+             ORDER BY latest_epoch DESC, project ASC",
+        )
+        .map_err(ApiError::internal)?;
+    let rows: Vec<Value> = stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "project": row.get::<_, String>(0)?,
+                "observationCount": row.get::<_, i64>(1)?,
+                "latestEpoch": row.get::<_, Option<i64>>(2)?
+            }))
+        })
+        .map_err(ApiError::internal)?
+        .collect::<Result<_, _>>()
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!({ "projects": rows, "count": rows.len() })))
+}
+
+pub async fn processing_status(State(state): State<AppState>) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pending_messages WHERE status = 'pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let processing: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pending_messages WHERE status = 'processing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    Ok(Json(json!({
+        "active": processing > 0,
+        "pending": pending,
+        "processing": processing
+    })))
+}
+
+pub async fn export_data(State(state): State<AppState>) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    Ok(Json(json!({
+        "format": "claude-mem-rs-export-v1",
+        "exportedAt": now_timestamp().0,
+        "sdkSessions": export_sdk_sessions(&conn)?,
+        "observations": export_observations(&conn)?,
+        "sessionSummaries": export_summaries(&conn)?,
+        "userPrompts": export_prompts(&conn)?
+    })))
+}
+
+pub async fn import_data(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let sessions = import_rows(&conn, "sdk_sessions", body.get("sdkSessions"))?;
+    let observations = import_rows(&conn, "observations", body.get("observations"))?;
+    let summaries = import_rows(&conn, "session_summaries", body.get("sessionSummaries"))?;
+    let prompts = import_rows(&conn, "user_prompts", body.get("userPrompts"))?;
+    Ok(Json(json!({
+        "success": true,
+        "imported": {
+            "sdkSessions": sessions,
+            "observations": observations,
+            "sessionSummaries": summaries,
+            "userPrompts": prompts
+        }
+    })))
+}
+
+pub async fn settings_get() -> ApiResult<Value> {
+    Ok(Json(read_json_file(&settings_path(), json!({}))?))
+}
+
+pub async fn settings_post(Json(body): Json<Value>) -> ApiResult<Value> {
+    write_json_file(&settings_path(), &body)?;
+    Ok(Json(json!({ "success": true, "settings": body })))
+}
+
+pub async fn logs_get(Query(query): Query<HashMap<String, String>>) -> ApiResult<Value> {
+    let path = log_path();
+    let limit = parse_limit(query.get("limit"), 200) as usize;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines = text
+        .lines()
+        .rev()
+        .take(limit)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    Ok(Json(
+        json!({ "path": path, "lines": lines, "count": lines.len() }),
+    ))
+}
+
+pub async fn logs_clear() -> ApiResult<Value> {
+    let path = log_path();
+    ensure_parent(&path)?;
+    std::fs::write(&path, "").map_err(ApiError::internal)?;
+    Ok(Json(json!({ "success": true, "path": path })))
+}
+
+pub async fn branch_status() -> ApiResult<Value> {
+    Ok(Json(json!({
+        "repo": git_output(&["rev-parse", "--show-toplevel"]).ok(),
+        "branch": git_output(&["branch", "--show-current"]).unwrap_or_else(|_| "unknown".into()),
+        "commit": git_output(&["rev-parse", "HEAD"]).ok(),
+        "dirty": !git_output(&["status", "--porcelain"]).unwrap_or_default().trim().is_empty(),
+        "mutationEnabled": branch_mutation_enabled()
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchSwitchRequest {
+    branch: String,
+}
+
+pub async fn branch_switch(Json(req): Json<BranchSwitchRequest>) -> ApiResult<Value> {
+    if !branch_mutation_enabled() {
+        return Err(ApiError::forbidden(
+            "branch mutation requires CLAUDE_MEM_ALLOW_BRANCH_MUTATION=true",
+        ));
+    }
+    let output = git_output(&["switch", &req.branch]).map_err(ApiError::internal)?;
+    Ok(Json(json!({ "success": true, "output": output })))
+}
+
+pub async fn branch_update() -> ApiResult<Value> {
+    if !branch_mutation_enabled() {
+        return Err(ApiError::forbidden(
+            "branch mutation requires CLAUDE_MEM_ALLOW_BRANCH_MUTATION=true",
+        ));
+    }
+    let output = git_output(&["pull", "--ff-only"]).map_err(ApiError::internal)?;
+    Ok(Json(json!({ "success": true, "output": output })))
+}
+
+fn snapshot(state: &AppState, limit: i64) -> Result<Value, ApiError> {
+    let conn = state.conn.lock().unwrap();
+    let observation_ids = list_ids(&conn, "observations", None, limit)?;
+    let summary_ids = list_ids(&conn, "session_summaries", None, limit)?;
+    Ok(json!({
+        "stats": db_stats_locked(&conn)?,
+        "observations": get_observations_by_ids(&conn, &observation_ids).map_err(ApiError::internal)?,
+        "summaries": get_summaries_by_ids(&conn, &summary_ids).map_err(ApiError::internal)?
+    }))
+}
+
+fn db_stats(state: &AppState) -> Result<Value, ApiError> {
+    let conn = state.conn.lock().unwrap();
+    db_stats_locked(&conn)
+}
+
+fn db_stats_locked(conn: &rusqlite::Connection) -> Result<Value, ApiError> {
+    Ok(json!({
+        "sessions": count_table(conn, "sdk_sessions")?,
+        "observations": count_table(conn, "observations")?,
+        "summaries": count_table(conn, "session_summaries")?,
+        "prompts": count_table(conn, "user_prompts")?,
+        "pendingMessages": count_table(conn, "pending_messages").unwrap_or(0)
+    }))
+}
+
+fn count_table(conn: &rusqlite::Connection, table: &str) -> Result<i64, ApiError> {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
+    .map_err(ApiError::internal)
+}
+
+fn list_ids(
+    conn: &rusqlite::Connection,
+    table: &str,
+    project: Option<&str>,
+    limit: i64,
+) -> Result<Vec<i64>, ApiError> {
+    let has_project = matches!(table, "observations" | "session_summaries") && project.is_some();
+    let sql = if has_project {
+        format!(
+            "SELECT id FROM {table} WHERE project = ?1 ORDER BY created_at_epoch DESC, id DESC LIMIT ?2"
+        )
+    } else {
+        format!("SELECT id FROM {table} ORDER BY created_at_epoch DESC, id DESC LIMIT ?1")
+    };
+    let mut stmt = conn.prepare(&sql).map_err(ApiError::internal)?;
+    let rows = if let Some(project) = project.filter(|_| has_project) {
+        stmt.query_map(rusqlite::params![project, limit], |row| row.get(0))
+            .map_err(ApiError::internal)?
+            .collect::<Result<Vec<i64>, _>>()
+            .map_err(ApiError::internal)?
+    } else {
+        stmt.query_map(rusqlite::params![limit], |row| row.get(0))
+            .map_err(ApiError::internal)?
+            .collect::<Result<Vec<i64>, _>>()
+            .map_err(ApiError::internal)?
+    };
+    Ok(rows)
+}
+
+fn store_generated_summary(
+    conn: &rusqlite::Connection,
+    content_session_id: &str,
+    source: Option<&str>,
+) -> Result<i64, ApiError> {
+    let session = get_session_by_content_id(conn, content_session_id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::bad_request("unknown contentSessionId"))?;
+    let memory_session_id = match session.memory_session_id {
+        Some(id) => id,
+        None => {
+            let generated = format!("rust-local-memory:{content_session_id}");
+            update_memory_session_id(conn, content_session_id, &generated)
+                .map_err(ApiError::internal)?;
+            generated
+        }
+    };
+    let (created_at, created_at_epoch) = now_timestamp();
+    let prompt = get_latest_user_prompt(conn, content_session_id).map_err(ApiError::internal)?;
+    let prompt_number = prompt.as_ref().map(|prompt| prompt.prompt_number);
+
+    let input = if let Some(parsed) = source.and_then(parse_summary) {
+        SummaryInput {
+            memory_session_id,
+            project: session.project,
+            request: parsed.request.or_else(|| prompt.map(|p| p.prompt_text)),
+            investigated: parsed.investigated,
+            learned: parsed.learned,
+            completed: parsed.completed,
+            next_steps: parsed.next_steps,
+            notes: parsed.notes,
+            prompt_number,
+            discovery_tokens: Some(0),
+            created_at,
+            created_at_epoch,
+            ..Default::default()
+        }
+    } else {
+        let observations =
+            get_observations_for_session(conn, &memory_session_id).map_err(ApiError::internal)?;
+        fallback_summary_input(
+            memory_session_id,
+            session.project,
+            prompt
+                .map(|p| p.prompt_text)
+                .or_else(|| session.user_prompt),
+            prompt_number,
+            observations,
+            source,
+            created_at,
+            created_at_epoch,
+        )
+    };
+    store_summary(conn, &input).map_err(ApiError::internal)
+}
+
+fn fallback_summary_input(
+    memory_session_id: String,
+    project: String,
+    prompt: Option<String>,
+    prompt_number: Option<i64>,
+    observations: Vec<ObservationRow>,
+    source: Option<&str>,
+    created_at: String,
+    created_at_epoch: i64,
+) -> SummaryInput {
+    let titles = observations
+        .iter()
+        .take(8)
+        .filter_map(|obs| obs.title.clone().or_else(|| obs.narrative.clone()))
+        .collect::<Vec<_>>();
+    let files_read = observations
+        .iter()
+        .flat_map(|obs| obs.files_read.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    let files_edited = observations
+        .iter()
+        .flat_map(|obs| obs.files_modified.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    SummaryInput {
+        memory_session_id,
+        project,
+        request: prompt.or_else(|| Some("Session summary".into())),
+        investigated: (!titles.is_empty()).then(|| titles.join("; ")),
+        learned: source.map(trim_for_summary),
+        completed: Some(format!(
+            "Captured {} observation(s) for searchable recall.",
+            observations.len()
+        )),
+        next_steps: None,
+        files_read: (!files_read.is_empty())
+            .then(|| serde_json::to_string(&files_read).unwrap_or_else(|_| "[]".into())),
+        files_edited: (!files_edited.is_empty())
+            .then(|| serde_json::to_string(&files_edited).unwrap_or_else(|_| "[]".into())),
+        notes: Some("Generated by claude-mem-rs session summary fallback.".into()),
+        prompt_number,
+        discovery_tokens: Some(0),
+        created_at,
+        created_at_epoch,
+        merged_into_project: None,
+    }
+}
+
+fn trim_for_summary(value: &str) -> String {
+    let cleaned = strip_private_tags(value).trim().to_owned();
+    if cleaned.chars().count() > 1200 {
+        cleaned.chars().take(1200).collect()
+    } else {
+        cleaned
+    }
+}
+
+fn export_sdk_sessions(conn: &rusqlite::Connection) -> Result<Vec<Value>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, content_session_id, memory_session_id, project, user_prompt,
+                    started_at, started_at_epoch, completed_at, completed_at_epoch, status,
+                    worker_port, COALESCE(prompt_counter,0), custom_title, platform_source
+             FROM sdk_sessions ORDER BY id ASC",
+        )
+        .map_err(ApiError::internal)?;
+    let rows = stmt
+        .query_map([], |row| {
+        Ok(json!({
+            "id": row.get::<_, i64>(0)?,
+            "content_session_id": row.get::<_, String>(1)?,
+            "memory_session_id": row.get::<_, Option<String>>(2)?,
+            "project": row.get::<_, String>(3)?,
+            "user_prompt": row.get::<_, Option<String>>(4)?,
+            "started_at": row.get::<_, String>(5)?,
+            "started_at_epoch": row.get::<_, i64>(6)?,
+            "completed_at": row.get::<_, Option<String>>(7)?,
+            "completed_at_epoch": row.get::<_, Option<i64>>(8)?,
+            "status": row.get::<_, String>(9)?,
+            "worker_port": row.get::<_, Option<i64>>(10)?,
+            "prompt_counter": row.get::<_, i64>(11)?,
+            "custom_title": row.get::<_, Option<String>>(12)?,
+            "platform_source": row.get::<_, Option<String>>(13)?.unwrap_or_else(|| "claude".into())
+        }))
+    })
+    .map_err(ApiError::internal)?
+    .collect::<Result<_, _>>()
+    .map_err(ApiError::internal)?;
+    Ok(rows)
+}
+
+fn export_observations(conn: &rusqlite::Connection) -> Result<Vec<ObservationRow>, ApiError> {
+    let ids = list_ids(conn, "observations", None, i64::MAX)?;
+    get_observations_by_ids(conn, &ids).map_err(ApiError::internal)
+}
+
+fn export_summaries(conn: &rusqlite::Connection) -> Result<Vec<SessionSummaryRow>, ApiError> {
+    let ids = list_ids(conn, "session_summaries", None, i64::MAX)?;
+    get_summaries_by_ids(conn, &ids).map_err(ApiError::internal)
+}
+
+fn export_prompts(conn: &rusqlite::Connection) -> Result<Vec<UserPromptRow>, ApiError> {
+    let ids = list_ids(conn, "user_prompts", None, i64::MAX)?;
+    get_user_prompts_by_ids(conn, &ids).map_err(ApiError::internal)
+}
+
+fn import_rows(
+    conn: &rusqlite::Connection,
+    table: &str,
+    rows: Option<&Value>,
+) -> Result<usize, ApiError> {
+    let Some(rows) = rows.and_then(Value::as_array) else {
+        return Ok(0);
+    };
+    let allowed =
+        import_columns(table).ok_or_else(|| ApiError::bad_request("unsupported import table"))?;
+    let mut inserted = 0;
+    for row in rows {
+        let Some(object) = row.as_object() else {
+            continue;
+        };
+        let columns = allowed
+            .iter()
+            .filter(|column| object.contains_key(**column))
+            .copied()
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            continue;
+        }
+        let placeholders = (1..=columns.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "INSERT OR IGNORE INTO {table} ({}) VALUES ({placeholders})",
+            columns.join(",")
+        );
+        let values = columns
+            .iter()
+            .map(|column| json_to_sql_value(object.get(*column).unwrap_or(&Value::Null)))
+            .collect::<Vec<_>>();
+        let params = values
+            .iter()
+            .map(|value| value as &dyn rusqlite::types::ToSql)
+            .collect::<Vec<_>>();
+        inserted += conn
+            .execute(&sql, params.as_slice())
+            .map_err(ApiError::internal)?;
+    }
+    Ok(inserted)
+}
+
+fn import_columns(table: &str) -> Option<&'static [&'static str]> {
+    match table {
+        "sdk_sessions" => Some(&[
+            "id",
+            "content_session_id",
+            "memory_session_id",
+            "project",
+            "user_prompt",
+            "started_at",
+            "started_at_epoch",
+            "completed_at",
+            "completed_at_epoch",
+            "status",
+            "worker_port",
+            "prompt_counter",
+            "custom_title",
+            "platform_source",
+        ]),
+        "observations" => Some(&[
+            "id",
+            "memory_session_id",
+            "project",
+            "text",
+            "type",
+            "title",
+            "subtitle",
+            "narrative",
+            "facts",
+            "concepts",
+            "files_read",
+            "files_modified",
+            "prompt_number",
+            "discovery_tokens",
+            "created_at",
+            "created_at_epoch",
+            "generated_by_model",
+            "relevance_count",
+            "merged_into_project",
+            "agent_type",
+            "agent_id",
+            "content_hash",
+        ]),
+        "session_summaries" => Some(&[
+            "id",
+            "memory_session_id",
+            "project",
+            "request",
+            "investigated",
+            "learned",
+            "completed",
+            "next_steps",
+            "files_read",
+            "files_edited",
+            "notes",
+            "prompt_number",
+            "discovery_tokens",
+            "created_at",
+            "created_at_epoch",
+            "merged_into_project",
+        ]),
+        "user_prompts" => Some(&[
+            "id",
+            "content_session_id",
+            "prompt_number",
+            "prompt_text",
+            "created_at",
+            "created_at_epoch",
+        ]),
+        _ => None,
+    }
+}
+
+fn json_to_sql_value(value: &Value) -> rusqlite::types::Value {
+    match value {
+        Value::Null => rusqlite::types::Value::Null,
+        Value::Bool(value) => rusqlite::types::Value::Integer(i64::from(*value)),
+        Value::Number(value) => value
+            .as_i64()
+            .map(rusqlite::types::Value::Integer)
+            .or_else(|| value.as_f64().map(rusqlite::types::Value::Real))
+            .unwrap_or(rusqlite::types::Value::Null),
+        Value::String(value) => rusqlite::types::Value::Text(value.clone()),
+        Value::Array(_) | Value::Object(_) => rusqlite::types::Value::Text(value.to_string()),
+    }
+}
+
+fn claude_mem_home() -> PathBuf {
+    std::env::var_os("CLAUDE_MEM_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude-mem")))
+        .unwrap_or_else(|| PathBuf::from(".claude-mem"))
+}
+
+fn settings_path() -> PathBuf {
+    claude_mem_home().join("settings.json")
+}
+
+fn log_path() -> PathBuf {
+    claude_mem_home().join("claude-mem.log")
+}
+
+fn read_json_file(path: &PathBuf, default: Value) -> Result<Value, ApiError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).map_err(ApiError::internal),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default),
+        Err(error) => Err(ApiError::internal(error)),
+    }
+}
+
+fn write_json_file(path: &PathBuf, value: &Value) -> Result<(), ApiError> {
+    ensure_parent(path)?;
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(value).map_err(ApiError::internal)?,
+    )
+    .map_err(ApiError::internal)
+}
+
+fn ensure_parent(path: &PathBuf) -> Result<(), ApiError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(ApiError::internal)?;
+    }
+    Ok(())
+}
+
+fn git_output(args: &[&str]) -> std::io::Result<String> {
+    let output = Command::new("git").args(args).output()?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        Ok(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
+fn branch_mutation_enabled() -> bool {
+    env_truthy("CLAUDE_MEM_ALLOW_BRANCH_MUTATION")
+}
+
+fn qdrant_enabled_env() -> bool {
+    env_truthy("CLAUDE_MEM_QDRANT_ENABLED") || std::env::var_os("CLAUDE_MEM_QDRANT_URL").is_some()
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 fn search_observations(

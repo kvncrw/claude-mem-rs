@@ -1,8 +1,11 @@
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode};
-use claude_mem_worker::http::router::{build_router_with_state, AppState};
-use serde_json::{json, Value};
+use claude_mem_worker::http::router::{AppState, build_router_with_state};
+use serde_json::{Value, json};
+use std::sync::Mutex;
 use tower::ServiceExt;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 async fn json_request(
     app: axum::Router,
@@ -127,10 +130,12 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(formatted_search["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Dynatron power cap"));
+    assert!(
+        formatted_search["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Dynatron power cap")
+    );
 
     let (status, timeline) = get_json(
         app.clone(),
@@ -157,11 +162,13 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(by_type["count"], 2);
-    assert!(by_type["observations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|row| row["title"] == "Read tool use"));
+    assert!(
+        by_type["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["title"] == "Read tool use")
+    );
 
     let (status, by_file) = get_json(
         app.clone(),
@@ -186,10 +193,12 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(semantic["count"], 2);
-    assert!(semantic["context"]
-        .as_str()
-        .unwrap()
-        .contains("Dynatron power cap"));
+    assert!(
+        semantic["context"]
+            .as_str()
+            .unwrap()
+            .contains("Dynatron power cap")
+    );
 
     let (status, context) = get_text(app.clone(), "/api/context/inject?project=cloudy-fork").await;
     assert_eq!(status, StatusCode::OK);
@@ -210,4 +219,164 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
         json_request(app, Method::POST, "/api/admin/shutdown", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(shutdown["success"], true);
+}
+
+#[tokio::test]
+async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let home = tempfile::TempDir::new().unwrap();
+    std::env::set_var("CLAUDE_MEM_HOME", home.path());
+
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state);
+
+    let (status, html) = get_text(app.clone(), "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("claude-mem-rs"));
+
+    let (status, stream) = get_text(app.clone(), "/stream").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(stream.contains("event: initial_load"));
+
+    let (status, settings) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/settings",
+        json!({ "viewer": { "theme": "system" }, "qdrant": { "enabled": false } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["settings"]["viewer"]["theme"], "system");
+
+    let (status, settings) = get_json(app.clone(), "/api/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings["viewer"]["theme"], "system");
+
+    let (status, logs) =
+        json_request(app.clone(), Method::POST, "/api/logs/clear", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(logs["success"], true);
+
+    let (status, logs) = get_json(app.clone(), "/api/logs?limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(logs["count"], 0);
+
+    let (status, branch) = get_json(app.clone(), "/api/branch/status").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(branch["mutationEnabled"].is_boolean());
+
+    let (status, blocked_switch) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/branch/switch",
+        json!({ "branch": "main" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        blocked_switch["error"]
+            .as_str()
+            .unwrap()
+            .contains("CLAUDE_MEM_ALLOW_BRANCH_MUTATION")
+    );
+
+    let (status, _) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "summary-content-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Summarize the thermal mitigation work for search."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, observation) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/observations",
+        json!({
+            "contentSessionId": "summary-content-e2e",
+            "tool_name": "Edit",
+            "tool_input": { "file_path": "/repo/thermal.rs" },
+            "tool_response": { "content": "Power caps beat fan speed for tiny 1U coolers." },
+            "cwd": "/home/kcrawley/projects/cloudy-fork"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(observation["success"], true);
+
+    let (status, summarize) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/summarize",
+        json!({
+            "contentSessionId": "summary-content-e2e",
+            "summary": "<summary><request>Thermal mitigation</request><learned>Power caps beat chassis fans.</learned><completed>Added recallable summary.</completed></summary>"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(summarize["summaryId"].as_i64().unwrap() > 0);
+
+    let (status, complete) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/complete",
+        json!({ "contentSessionId": "summary-content-e2e" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(complete["completed"], true);
+    assert_eq!(complete["summaryId"], Value::Null);
+
+    let (status, session_status) = get_json(
+        app.clone(),
+        "/api/sessions/status?contentSessionId=summary-content-e2e",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session_status["hasSummary"], true);
+
+    let (status, summaries) = get_json(app.clone(), "/api/summaries?project=cloudy-fork").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summaries["count"], 1);
+
+    let (status, session_search) = get_json(
+        app.clone(),
+        "/api/search?query=Power&project=cloudy-fork&type=sessions",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(session_search["sessions"].as_array().unwrap().len(), 1);
+
+    let (status, projects) = get_json(app.clone(), "/api/projects").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(projects["projects"][0]["project"], "cloudy-fork");
+
+    let (status, doctor) = get_json(app.clone(), "/api/admin/doctor").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(doctor["ok"], true);
+    assert_eq!(doctor["counts"]["summaries"], 1);
+
+    let (status, export) = get_json(app.clone(), "/api/export").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(export["format"], "claude-mem-rs-export-v1");
+    assert_eq!(export["sessionSummaries"].as_array().unwrap().len(), 1);
+
+    let imported_app = build_router_with_state(AppState::in_memory().unwrap());
+    let (status, imported) =
+        json_request(imported_app.clone(), Method::POST, "/api/import", export).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(imported["success"], true);
+
+    let (status, imported_stats) = get_json(imported_app, "/api/stats").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(imported_stats["summaries"], 1);
+    assert_eq!(imported_stats["observations"], 1);
+
+    std::env::remove_var("CLAUDE_MEM_HOME");
 }

@@ -1,9 +1,9 @@
 pub mod handlers;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Read;
 use std::path::Path;
 
@@ -76,6 +76,7 @@ pub struct NormalizedHookInput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HookSpecificOutput {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub hook_event_name: String,
     pub additional_context: String,
 }
@@ -83,6 +84,10 @@ pub struct HookSpecificOutput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HookOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#continue: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppress_output: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hook_specific_output: Option<HookSpecificOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,16 +133,26 @@ pub async fn execute_hook(
         "session-init" => session_init_handler(&input, worker).await?,
         "observation" => observation_handler(&input, worker).await?,
         "session-complete" => session_complete_handler(&input, worker).await?,
+        "summarize" => summarize_handler(&input, worker).await?,
         "user-message" => user_message_handler(&input, worker).await?,
         _ => return Err(anyhow!("unknown hook event: {event}")),
     };
     Ok(HookExecution {
         exit_code: SUCCESS,
-        output,
+        output: format_output(platform, output),
     })
 }
 
 fn normalize_input(platform: &str, raw: Value) -> NormalizedHookInput {
+    match platform {
+        "cursor" | "cursor-agent" => normalize_cursor_input(platform, raw),
+        "gemini" | "gemini-cli" => normalize_gemini_input(platform, raw),
+        "codex" | "raw" => normalize_raw_input(platform, raw),
+        _ => normalize_raw_input(platform, raw),
+    }
+}
+
+fn normalize_raw_input(platform: &str, raw: Value) -> NormalizedHookInput {
     let field = |snake: &str, camel: &str| -> Option<String> {
         raw.get(snake)
             .or_else(|| raw.get(camel))
@@ -166,14 +181,123 @@ fn normalize_input(platform: &str, raw: Value) -> NormalizedHookInput {
     }
 }
 
+fn normalize_cursor_input(platform: &str, raw: Value) -> NormalizedHookInput {
+    let cwd = raw
+        .get("workspace_roots")
+        .and_then(Value::as_array)
+        .and_then(|roots| roots.first())
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| raw.get("cwd").and_then(Value::as_str).map(str::to_owned))
+        .or_else(default_cwd);
+    let command = raw.get("command").and_then(Value::as_str);
+    let is_shell_command = command.is_some() && raw.get("tool_name").is_none();
+    NormalizedHookInput {
+        session_id: raw
+            .get("conversation_id")
+            .or_else(|| raw.get("generation_id"))
+            .or_else(|| raw.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        cwd,
+        prompt: raw
+            .get("prompt")
+            .or_else(|| raw.get("query"))
+            .or_else(|| raw.get("input"))
+            .or_else(|| raw.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        tool_name: if is_shell_command {
+            Some("Bash".into())
+        } else {
+            raw.get("tool_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        },
+        tool_input: if is_shell_command {
+            Some(json!({ "command": command.unwrap_or_default() }))
+        } else {
+            raw.get("tool_input").cloned()
+        },
+        tool_response: if is_shell_command {
+            Some(json!({ "output": raw.get("output").cloned().unwrap_or(Value::Null) }))
+        } else {
+            raw.get("result_json").cloned()
+        },
+        transcript_path: None,
+        platform: platform.to_owned(),
+    }
+}
+
+fn normalize_gemini_input(platform: &str, raw: Value) -> NormalizedHookInput {
+    let hook_event_name = raw.get("hook_event_name").and_then(Value::as_str);
+    let mut tool_name = raw
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut tool_input = raw.get("tool_input").cloned();
+    let mut tool_response = raw.get("tool_response").cloned();
+
+    if hook_event_name == Some("AfterAgent") && raw.get("prompt_response").is_some() {
+        tool_name.get_or_insert_with(|| "GeminiAgent".into());
+        tool_input.get_or_insert_with(
+            || json!({ "prompt": raw.get("prompt").cloned().unwrap_or(Value::Null) }),
+        );
+        tool_response.get_or_insert_with(
+            || json!({ "response": raw.get("prompt_response").cloned().unwrap_or(Value::Null) }),
+        );
+    }
+    if hook_event_name == Some("BeforeTool") && tool_name.is_some() && tool_response.is_none() {
+        tool_response = Some(json!({ "_preExecution": true }));
+    }
+    if hook_event_name == Some("Notification") {
+        tool_name.get_or_insert_with(|| "GeminiNotification".into());
+        tool_input.get_or_insert_with(|| {
+            json!({
+                "notification_type": raw.get("notification_type").cloned().unwrap_or(Value::Null),
+                "message": raw.get("message").cloned().unwrap_or(Value::Null)
+            })
+        });
+        tool_response.get_or_insert_with(
+            || json!({ "details": raw.get("details").cloned().unwrap_or(Value::Null) }),
+        );
+    }
+
+    NormalizedHookInput {
+        session_id: raw
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| std::env::var("GEMINI_SESSION_ID").ok()),
+        cwd: raw
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| std::env::var("GEMINI_CWD").ok())
+            .or_else(|| std::env::var("GEMINI_PROJECT_DIR").ok())
+            .or_else(|| std::env::var("CLAUDE_PROJECT_DIR").ok())
+            .or_else(default_cwd),
+        prompt: raw.get("prompt").and_then(Value::as_str).map(str::to_owned),
+        tool_name,
+        tool_input,
+        tool_response,
+        transcript_path: raw
+            .get("transcript_path")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        platform: platform.to_owned(),
+    }
+}
+
 async fn context_handler(input: &NormalizedHookInput, worker: &WorkerClient) -> Result<HookOutput> {
     if !worker.healthy().await {
         return Ok(context_output("SessionStart", ""));
     }
     let project = project_name(input.cwd.as_deref());
     let path = format!(
-        "/api/context/inject?project={}&platformSource=claude",
-        encode_component(&project)
+        "/api/context/inject?project={}&platformSource={}",
+        encode_component(&project),
+        encode_component(platform_source(&input.platform))
     );
     let context = worker.get_text(&path).await?.unwrap_or_default();
     Ok(context_output("SessionStart", context.trim()))
@@ -202,7 +326,7 @@ async fn session_init_handler(
                 "contentSessionId": session_id,
                 "project": project,
                 "prompt": prompt,
-                "platformSource": "claude"
+                "platformSource": platform_source(&input.platform)
             }),
         )
         .await?;
@@ -252,7 +376,7 @@ async fn observation_handler(
             "/api/sessions/observations",
             json!({
                 "contentSessionId": session_id,
-                "platformSource": "claude",
+                "platformSource": platform_source(&input.platform),
                 "tool_name": input.tool_name,
                 "tool_input": input.tool_input,
                 "tool_response": input.tool_response,
@@ -276,7 +400,35 @@ async fn session_complete_handler(
     let _ = worker
         .post_json(
             "/api/sessions/complete",
-            json!({ "contentSessionId": session_id, "platformSource": "claude" }),
+            json!({ "contentSessionId": session_id, "platformSource": platform_source(&input.platform) }),
+        )
+        .await?;
+    Ok(HookOutput::default())
+}
+
+async fn summarize_handler(
+    input: &NormalizedHookInput,
+    worker: &WorkerClient,
+) -> Result<HookOutput> {
+    if !worker.healthy().await {
+        return Ok(HookOutput::default());
+    }
+    let Some(session_id) = input.session_id.as_deref() else {
+        return Ok(HookOutput::default());
+    };
+    let source = input
+        .tool_response
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| input.prompt.clone());
+    let _ = worker
+        .post_json(
+            "/api/sessions/summarize",
+            json!({
+                "contentSessionId": session_id,
+                "summary": source,
+            }),
         )
         .await?;
     Ok(HookOutput::default())
@@ -292,12 +444,56 @@ async fn user_message_handler(
 
 fn context_output(event: &str, context: &str) -> HookOutput {
     HookOutput {
+        r#continue: None,
+        suppress_output: None,
         hook_specific_output: Some(HookSpecificOutput {
             hook_event_name: event.to_owned(),
             additional_context: context.to_owned(),
         }),
         system_message: None,
     }
+}
+
+fn format_output(platform: &str, output: HookOutput) -> HookOutput {
+    if matches!(platform, "gemini" | "gemini-cli") {
+        HookOutput {
+            r#continue: Some(true),
+            suppress_output: output.suppress_output,
+            hook_specific_output: output
+                .hook_specific_output
+                .map(|context| HookSpecificOutput {
+                    hook_event_name: String::new(),
+                    additional_context: strip_ansi(&context.additional_context),
+                }),
+            system_message: output.system_message.map(|message| strip_ansi(&message)),
+        }
+    } else if matches!(platform, "cursor" | "cursor-agent") {
+        HookOutput {
+            r#continue: Some(true),
+            suppress_output: None,
+            hook_specific_output: None,
+            system_message: None,
+        }
+    } else {
+        output
+    }
+}
+
+fn platform_source(platform: &str) -> &str {
+    match platform {
+        "claude-code" | "claude" => "claude",
+        "gemini" | "gemini-cli" => "gemini",
+        "cursor" | "cursor-agent" => "cursor",
+        "codex" => "codex",
+        "raw" => "raw",
+        other => other,
+    }
+}
+
+fn default_cwd() -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .map(|path| path.display().to_string())
 }
 
 fn project_name(cwd: Option<&str>) -> String {
@@ -319,4 +515,24 @@ fn encode_component(value: &str) -> String {
         }
     }
     out
+}
+
+fn strip_ansi(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
 }

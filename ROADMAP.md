@@ -30,10 +30,25 @@ Implemented:
 Remaining:
 
 - Add explicit schema/version metadata in collection payload or a sidecar marker.
-- Extend indexing beyond observations to prompts and summaries.
+- Extend vector indexing beyond observations to prompts and summaries. SQLite FTS5 already indexes prompts and generated/stored summaries.
 - Add hybrid ranking that merges Qdrant scores with SQLite FTS5/BM25 results.
 - Add migration tooling for Chroma-to-Qdrant if an old Chroma directory is present.
 - Add containerized CI coverage for real Qdrant.
+
+## Runtime Parity Follow-Ups
+
+Implemented in Rust:
+
+- Browser viewer root and initial SSE stream endpoint.
+- Claude, Cursor, Gemini CLI, Codex, and raw hook adapters.
+- Import/export, doctor, stats/projects, processing-status, settings, logs, and guarded branch routes.
+- Session summary generation on explicit summarize calls and completion fallback.
+
+Remaining:
+
+- Persistent SSE broadcaster for live observation/summary/prompt events.
+- Richer browser UI beyond the lightweight built-in viewer.
+- Deeper transcript watcher/install flows for non-Claude editors.
 
 ## Migration Principles
 

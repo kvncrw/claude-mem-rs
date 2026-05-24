@@ -45,7 +45,13 @@ plan lives in `ROADMAP.md`.
 - The old Chroma vector layer is still only represented by compatibility names
   and cleanup tests. Do not revive it; Qdrant is the replacement path.
 - The hook pipeline: **stdin → adapter → handler → worker HTTP → HookResult →
-  stdout JSON + exit code**. Mirrors `src/cli/hook-command.ts` exactly.
+  stdout JSON + exit code**. Adapters cover Claude, Cursor, Gemini CLI, Codex,
+  and raw payloads.
+- Browser/admin parity routes live in the worker: `/`, `/stream`,
+  `/api/admin/doctor`, `/api/export`, `/api/import`, `/api/settings`,
+  `/api/logs`, `/api/branch/status`, and guarded branch mutation routes.
+- Session completion auto-generates one fallback searchable summary when a
+  session has no explicit summary yet.
 - Dual session IDs: `content_session_id` (user-visible, immutable) and
   `memory_session_id` (NULL at create, populated async by the worker).
   `ObservationRow` and `SdkSessionRow` both carry both; FK with `ON UPDATE CASCADE`.

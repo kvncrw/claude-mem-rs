@@ -15,23 +15,27 @@ Windows is not a supported target. The runtime assumes Linux/macOS/POSIX process
 
 ## Status
 
-The Rust port currently covers the normal Claude lifecycle path:
+The Rust port currently covers the normal lifecycle path:
 
 - session start / prompt persistence
 - PostToolUse observation capture
 - file path tracking for tool observations
 - manual memory save
-- search across observations and prompts
+- session summary storage, fallback generation, and searchable summary recall
+- search across observations, prompts, and summaries
 - search helpers by file, concept, and type
 - timeline expansion around a search result
 - semantic context lookup through SQLite FTS5
 - optional self-hosted Qdrant indexing/search for observations
-- Claude context injection
+- Claude, Cursor, Gemini CLI, Codex, and raw hook adapter normalization
+- context injection
 - session completion hook
-- worker health, readiness, version, PID file, and graceful HTTP shutdown
+- browser viewer and initial SSE snapshot stream
+- worker health, readiness, version, doctor, PID file, and graceful HTTP shutdown
+- import/export, settings, logs, project/stats, processing-status, and guarded branch admin routes
 - MCP save/search/timeline/fetch tools over the worker
 
-The original TypeScript project also includes broader UI, installer, multi-editor, and admin surfaces. Those are not the primary runtime surface here yet.
+The remaining TypeScript-only surfaces are installer UX and deeper background watcher integrations. The worker/runtime path is native Rust.
 
 ## Build And Test
 
@@ -116,9 +120,14 @@ cargo run -p claude-mem-worker
 Useful endpoints:
 
 ```bash
+curl http://127.0.0.1:37777/
+curl http://127.0.0.1:37777/stream
 curl http://127.0.0.1:37777/api/health
 curl http://127.0.0.1:37777/api/readiness
 curl http://127.0.0.1:37777/api/version
+curl http://127.0.0.1:37777/api/admin/doctor
+curl http://127.0.0.1:37777/api/stats
+curl http://127.0.0.1:37777/api/projects
 
 curl -X POST http://127.0.0.1:37777/api/memory/save \
   -H 'content-type: application/json' \
@@ -130,6 +139,14 @@ curl 'http://127.0.0.1:37777/api/search/by-concept?concept=tool-use&project=my-p
 curl 'http://127.0.0.1:37777/api/search/by-type?type=discovery&project=my-project'
 curl 'http://127.0.0.1:37777/api/timeline?anchor=1&project=my-project'
 
+curl -X POST http://127.0.0.1:37777/api/sessions/summarize \
+  -H 'content-type: application/json' \
+  -d '{"contentSessionId":"demo","summary":"<summary><request>Demo</request><completed>Stored searchable summary.</completed></summary>"}'
+
+curl http://127.0.0.1:37777/api/export
+curl http://127.0.0.1:37777/api/settings
+curl http://127.0.0.1:37777/api/logs
+curl http://127.0.0.1:37777/api/branch/status
 curl -X POST http://127.0.0.1:37777/api/admin/shutdown
 ```
 
@@ -151,7 +168,15 @@ printf '%s' '{"session_id":"demo","cwd":"/repo/my-project"}' \
   | cargo run -p claude-mem-supervisor --bin hook -- claude-code session-complete
 ```
 
-Supported events are `session-init`, `observation`, `context`, `user-message`, and `session-complete`.
+Supported events are `session-init`, `observation`, `context`, `user-message`, `summarize`, and `session-complete`.
+
+Supported platform adapters are:
+
+- `claude-code` / `claude`
+- `cursor` / `cursor-agent`
+- `gemini` / `gemini-cli`
+- `codex`
+- `raw`
 
 ## MCP
 
