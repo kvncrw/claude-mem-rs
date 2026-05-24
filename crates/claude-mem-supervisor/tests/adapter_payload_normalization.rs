@@ -129,7 +129,32 @@ async fn spawn_capturing_worker() -> (WorkerClient, CapturedRequests, oneshot::S
             .await
             .unwrap();
     });
-    (WorkerClient::new(format!("http://{}", addr)), captured, tx)
+    // Block until the stub answers `/api/health` before returning. Without
+    // this, tests can race startup and the hook's single health probe
+    // trips before any request lands, leaving `first_body(...)` asserting
+    // on an empty capture. Codex P1 on PR #16.
+    let base = format!("http://{}", addr);
+    wait_until_ready(&base).await;
+    (WorkerClient::new(base), captured, tx)
+}
+
+async fn wait_until_ready(base: &str) {
+    let client = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match client
+            .get(format!("{base}/api/health"))
+            .timeout(std::time::Duration::from_millis(250))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => return,
+            _ if std::time::Instant::now() >= deadline => {
+                panic!("test worker stub never became ready");
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
 }
 
 fn assert_hook_succeeded(execution: &HookExecution) {

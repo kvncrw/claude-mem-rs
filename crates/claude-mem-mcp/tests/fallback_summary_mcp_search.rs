@@ -58,6 +58,29 @@ async fn fallback_summary_is_recoverable_via_mcp_search_tool() {
         axum::serve(listener, app).await.unwrap();
     });
 
+    // Block until the worker is reachable. Without this, the first POST
+    // can race startup and intermittently fail with a connection error
+    // or non-success status. Codex P2 on PR #16.
+    {
+        let base = format!("http://{addr}");
+        let probe = reqwest::Client::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match probe
+                .get(format!("{base}/api/health"))
+                .timeout(std::time::Duration::from_millis(250))
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => break,
+                _ if std::time::Instant::now() >= deadline => {
+                    panic!("worker never became ready");
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+    }
+
     // Trigger the fallback summary path explicitly (no explicit summary
     // was ever posted for this session).
     let complete = reqwest::Client::new()
