@@ -69,6 +69,14 @@ fn installer_writes_posix_runtime_integration_files() {
         cursor["mcpServers"]["claude-mem-rs"]["command"],
         "/usr/local/bin/claude-mem"
     );
+
+    let hooks_path = claude_dir.join("plugins/marketplaces/kvncrw/plugin/hooks/hooks.json");
+    let hooks: Value = serde_json::from_str(&std::fs::read_to_string(hooks_path).unwrap()).unwrap();
+    assert_eq!(
+        hooks["hooks"]["SessionStart"][0]["matcher"],
+        "startup|clear|compact"
+    );
+    assert_eq!(hooks["hooks"]["PostToolUse"][0]["matcher"], "*");
 }
 
 #[tokio::test]

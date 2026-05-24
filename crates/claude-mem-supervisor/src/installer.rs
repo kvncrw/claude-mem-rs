@@ -266,11 +266,23 @@ fn write_claude_hook_manifest(
     let manifest = json!({
         "description": "claude-mem-rs memory system hooks",
         "hooks": {
-            "SessionStart": [{"hooks": [{"type": "command", "command": format!("{command} context")}]}],
-            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": format!("{command} session-init")}]}],
-            "PostToolUse": [{"hooks": [{"type": "command", "command": format!("{command} observation")}]}],
-            "Stop": [{"hooks": [{"type": "command", "command": format!("{command} summarize")}]}],
-            "SessionEnd": [{"hooks": [{"type": "command", "command": format!("{command} session-complete")}]}]
+            "SessionStart": [{
+                "matcher": "startup|clear|compact",
+                "hooks": [{"type": "command", "command": format!("{command} context"), "timeout": 60}]
+            }],
+            "UserPromptSubmit": [{
+                "hooks": [{"type": "command", "command": format!("{command} session-init"), "timeout": 60}]
+            }],
+            "PostToolUse": [{
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": format!("{command} observation"), "timeout": 120}]
+            }],
+            "Stop": [{
+                "hooks": [{"type": "command", "command": format!("{command} summarize"), "timeout": 120}]
+            }],
+            "SessionEnd": [{
+                "hooks": [{"type": "command", "command": format!("{command} session-complete"), "timeout": 30}]
+            }]
         }
     });
     if !dry_run {
