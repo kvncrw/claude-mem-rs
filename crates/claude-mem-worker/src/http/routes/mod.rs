@@ -25,8 +25,8 @@ use claude_mem_core::db::transactions::store_batch;
 use claude_mem_core::shared::tag_stripping::strip_private_tags;
 use claude_mem_core::types::session::CreateSessionInput;
 use claude_mem_core::types::{
-    CorpusFile, CorpusFilter, ObservationInput, ObservationRow, SdkSessionRow,
-    SessionSummaryRow, UserPromptRow,
+    CorpusFile, CorpusFilter, ObservationInput, ObservationRow, SdkSessionRow, SessionSummaryRow,
+    UserPromptRow,
 };
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -1729,7 +1729,21 @@ pub async fn processing_set(State(state): State<AppState>) -> ApiResult<Value> {
 
 pub async fn pending_queue_get(State(state): State<AppState>) -> ApiResult<Value> {
     let conn = state.conn.lock().unwrap();
-    let queue = pending_queue_rows(&conn)?;
+    let queue = pending_queue_rows(&conn, PendingQueueFilter::All)?;
+    Ok(Json(pending_queue_response(queue)))
+}
+
+pub async fn pending_queue_all_get(State(state): State<AppState>) -> ApiResult<Value> {
+    pending_queue_get(State(state)).await
+}
+
+pub async fn pending_queue_failed_get(State(state): State<AppState>) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let queue = pending_queue_rows(&conn, PendingQueueFilter::Failed)?;
+    Ok(Json(pending_queue_response(queue)))
+}
+
+fn pending_queue_response(queue: Vec<Value>) -> Value {
     let total_pending = queue
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("pending"))
@@ -1742,7 +1756,7 @@ pub async fn pending_queue_get(State(state): State<AppState>) -> ApiResult<Value
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("failed"))
         .count();
-    Ok(Json(json!({
+    json!({
         "queue": {
             "messages": queue,
             "totalPending": total_pending,
@@ -1752,7 +1766,7 @@ pub async fn pending_queue_get(State(state): State<AppState>) -> ApiResult<Value
         },
         "recentlyProcessed": [],
         "sessionsWithPendingWork": []
-    })))
+    })
 }
 
 pub async fn pending_queue_process(State(state): State<AppState>) -> ApiResult<Value> {
@@ -1760,11 +1774,21 @@ pub async fn pending_queue_process(State(state): State<AppState>) -> ApiResult<V
         .await
         .map_err(ApiError::internal)?;
     index_observation_ids_if_enabled(&state, &stats.observation_ids).await;
-    state.publish("queue_processed", observer_stats_json(&stats));
+    let result = observer_stats_json(&stats);
+    state.publish("queue_processed", result.clone());
     Ok(Json(json!({
         "success": true,
         "message": "Native Rust observer-agent queue processor ran",
-        "result": observer_stats_json(&stats)
+        "result": result,
+        "totalPendingSessions": stats.total_pending_sessions,
+        "sessionsStarted": stats.sessions_started,
+        "sessionsSkipped": stats.sessions_skipped,
+        "startedSessionIds": stats.started_session_ids,
+        "messagesProcessed": stats.messages_processed,
+        "messagesFailed": stats.messages_failed,
+        "observationsInserted": stats.observations_inserted,
+        "summariesInserted": stats.summaries_inserted,
+        "observationIds": stats.observation_ids
     })))
 }
 
@@ -1981,17 +2005,30 @@ fn count_pending_for_session(
     .map_err(ApiError::internal)
 }
 
-fn pending_queue_rows(conn: &rusqlite::Connection) -> Result<Vec<Value>, ApiError> {
+#[derive(Debug, Clone, Copy)]
+enum PendingQueueFilter {
+    All,
+    Failed,
+}
+
+fn pending_queue_rows(
+    conn: &rusqlite::Connection,
+    filter: PendingQueueFilter,
+) -> Result<Vec<Value>, ApiError> {
+    let status_clause = match filter {
+        PendingQueueFilter::All => "status IN ('pending','processing','failed')",
+        PendingQueueFilter::Failed => "status = 'failed'",
+    };
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id, session_db_id, content_session_id, message_type, tool_name,
                     cwd, prompt_number, status, retry_count, created_at_epoch,
                     started_processing_at_epoch, completed_at_epoch, failed_at_epoch
              FROM pending_messages
-             WHERE status IN ('pending','processing','failed')
+             WHERE {status_clause}
              ORDER BY created_at_epoch ASC, id ASC
              LIMIT 500",
-        )
+        ))
         .map_err(ApiError::internal)?;
     let rows = stmt
         .query_map([], |row| {
