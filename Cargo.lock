@@ -252,6 +252,7 @@ dependencies = [
  "axum",
  "bon",
  "claude-mem-core",
+ "claude-mem-mcp",
  "claude-mem-worker",
  "glob",
  "libc",

@@ -1073,7 +1073,6 @@ pub async fn context_inject(
         .or_else(|| query.get("project"))
         .ok_or_else(|| ApiError::bad_request("Project(s) parameter is required"))?;
     let limit = parse_limit(query.get("limit"), 20);
-    let for_human = query.get("colors").is_some_and(|v| v == "true");
     let conn = state.conn.lock().unwrap();
     let mut sections = Vec::new();
     for project in projects.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -1085,15 +1084,16 @@ pub async fn context_inject(
             },
         )
         .map_err(ApiError::internal)?;
-        for observation in observations {
-            sections.push(format_observation(
-                &observation,
-                &FormatOptions {
-                    for_human,
-                    ..Default::default()
-                },
-            ));
-        }
+        let summary_ids = list_ids(&conn, "session_summaries", Some(project), limit)?;
+        let sessions = get_summaries_by_ids(&conn, &summary_ids).map_err(ApiError::internal)?;
+        sections.push(ResultFormatter::new().format_recent_context(
+            project,
+            &SearchResults {
+                observations,
+                sessions,
+                prompts: Vec::new(),
+            },
+        ));
     }
     Ok(sections.join("\n\n"))
 }
@@ -1113,11 +1113,20 @@ pub async fn semantic_context(
         return Ok(Json(json!({ "context": "", "count": 0 })));
     };
     let rows = search_observations(&state, &q, req.project.as_deref(), req.limit.unwrap_or(5))?;
-    let context = rows
-        .iter()
-        .map(|row| format_observation(row, &FormatOptions::default()))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let context = if rows.is_empty() {
+        String::new()
+    } else {
+        let formatted = ResultFormatter::new().format_search_results(
+            &SearchResults {
+                observations: rows.clone(),
+                sessions: Vec::new(),
+                prompts: Vec::new(),
+            },
+            &q,
+            false,
+        );
+        format!("## Relevant Past Work\n\n{formatted}")
+    };
     Ok(Json(json!({ "context": context, "count": rows.len() })))
 }
 

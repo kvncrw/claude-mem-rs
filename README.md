@@ -7,6 +7,7 @@ This repository is a Rust workspace that replaces the TypeScript/Bun runtime wit
 - `claude-mem-worker`: long-running Axum HTTP worker backed by SQLite/FTS5.
 - `hook`: Claude Code hook dispatcher that reads hook JSON from stdin, calls the worker, and writes Claude-compatible JSON to stdout.
 - `claude-mem-mcp`: stdio MCP server that exposes memory tools over the worker HTTP API.
+- `claude-mem`: unified CLI for install, worker lifecycle, hooks, MCP, statusline counts, transcripts, and folder context.
 - `claude-mem-core`: schema, migrations, storage, context formatting, and shared types.
 - `claude-mem-sdk`: parser and prompt-building helpers with no service I/O dependencies.
 - `claude-mem-supervisor`: process, health, PID, shutdown, and hook support code.
@@ -32,6 +33,7 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - session completion hook
 - browser viewer and initial SSE snapshot stream
 - worker health, readiness, version, doctor, PID file, and graceful HTTP shutdown
+- unified worker `start` / `stop` / `restart` / `status`, `hook`, `mcp`, and `statusline` CLI entry points
 - import/export, settings, logs, project/stats, processing-status, and guarded branch admin routes
 - MCP save/search/timeline/fetch tools over the worker
 - native observer queue processing for queued observations and summaries
@@ -40,7 +42,7 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - browser viewer shell with live SSE events for session, observation, summary, queue, and manual-memory lifecycle changes
 - Claude Stop/summarize transcript JSONL extraction for summary generation, with system-reminder stripping and completion cleanup
 - rich built-in browser viewer for feed/search/timeline/context/admin/queue/logs/settings workflows
-- POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, and Codex transcript integration
+- POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, Codex transcript integration, and opencode MCP/plugin integration
 - generic JSONL transcript watcher daemon with v12-compatible schema config, offset state, tool pairing, summaries, and AGENTS context updates
 - folder `CLAUDE.md` memory-context generation and cleanup
 - MCP smart file search/outline/unfold helpers backed by the local filesystem
@@ -78,6 +80,14 @@ export CLAUDE_MEM_HOME=/path/to/data-dir
 export CLAUDE_MEM_WORKER_PORT=37777
 export CLAUDE_MEM_WORKER_HOST=127.0.0.1
 export CLAUDE_MEM_WORKER_URL=http://127.0.0.1:37777
+```
+
+The unified CLI can manage the worker and Claude statusline counts directly:
+
+```bash
+cargo run -p claude-mem-supervisor --bin claude-mem -- start
+cargo run -p claude-mem-supervisor --bin claude-mem -- status
+cargo run -p claude-mem-supervisor --bin claude-mem -- statusline /repo/my-project
 ```
 
 ## Optional Qdrant
@@ -194,20 +204,20 @@ curl -X POST http://127.0.0.1:37777/api/admin/shutdown
 
 ## Claude Hook CLI
 
-The hook binary is intentionally simple: the first argument is the platform, the second is the event, and stdin is the hook payload.
+The unified CLI and standalone hook binary both accept platform, event, and hook payload on stdin. The unified `claude-mem hook ...` path is what installed integrations use.
 
 ```bash
 printf '%s' '{"session_id":"demo","cwd":"/repo/my-project","prompt":"Remember the Rust port."}' \
-  | cargo run -p claude-mem-supervisor --bin hook -- claude-code session-init
+  | cargo run -p claude-mem-supervisor --bin claude-mem -- hook claude-code session-init
 
 printf '%s' '{"session_id":"demo","cwd":"/repo/my-project","tool_name":"Read","tool_input":{"file_path":"/repo/src/lib.rs"},"tool_response":{"content":"important result"}}' \
-  | cargo run -p claude-mem-supervisor --bin hook -- claude-code observation
+  | cargo run -p claude-mem-supervisor --bin claude-mem -- hook claude-code observation
 
 printf '%s' '{"session_id":"demo","cwd":"/repo/my-project"}' \
-  | cargo run -p claude-mem-supervisor --bin hook -- claude-code context
+  | cargo run -p claude-mem-supervisor --bin claude-mem -- hook claude-code context
 
 printf '%s' '{"session_id":"demo","cwd":"/repo/my-project"}' \
-  | cargo run -p claude-mem-supervisor --bin hook -- claude-code session-complete
+  | cargo run -p claude-mem-supervisor --bin claude-mem -- hook claude-code session-complete
 ```
 
 Supported events are `session-init`, `observation`, `context`, `user-message`, `summarize`, and `session-complete`.
@@ -218,6 +228,7 @@ Supported platform adapters are:
 - `cursor` / `cursor-agent`
 - `gemini` / `gemini-cli`
 - `codex`
+- `opencode`
 - `raw`
 
 ## MCP
@@ -225,7 +236,7 @@ Supported platform adapters are:
 Start the stdio MCP server:
 
 ```bash
-cargo run -p claude-mem-mcp
+cargo run -p claude-mem-supervisor --bin claude-mem -- mcp
 ```
 
 The MCP process expects the worker to be reachable through `CLAUDE_MEM_WORKER_URL` or `CLAUDE_MEM_WORKER_PORT`.

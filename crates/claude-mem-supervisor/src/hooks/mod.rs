@@ -1,5 +1,6 @@
 pub mod handlers;
 
+use crate::worker_runtime;
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,30 @@ impl WorkerClient {
     pub async fn healthy(&self) -> bool {
         matches!(self.get_text("/api/health").await, Ok(Some(_)))
     }
+
+    pub async fn healthy_with_retry(&self) -> bool {
+        for attempt in 0..10 {
+            if self.healthy().await {
+                return true;
+            }
+            if attempt < 9 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+        false
+    }
+
+    pub async fn get_text_with_retry(&self, path: &str) -> Result<Option<String>> {
+        for attempt in 0..10 {
+            if let Some(text) = self.get_text(path).await? {
+                return Ok(Some(text));
+            }
+            if attempt < 9 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -120,6 +145,7 @@ pub async fn run_hook_from_env() -> Result<i32> {
         serde_json::from_str(&stdin).context("failed to parse hook stdin JSON")?
     };
 
+    let _ = worker_runtime::ensure_worker_running().await;
     let execution = execute_hook(platform, event, raw, &WorkerClient::from_env()).await?;
     println!("{}", serde_json::to_string(&execution.output)?);
     Ok(execution.exit_code)
@@ -294,7 +320,7 @@ fn normalize_gemini_input(platform: &str, raw: Value) -> NormalizedHookInput {
 }
 
 async fn context_handler(input: &NormalizedHookInput, worker: &WorkerClient) -> Result<HookOutput> {
-    if !worker.healthy().await {
+    if !worker.healthy_with_retry().await {
         return Ok(context_output("SessionStart", ""));
     }
     let project = project_name(input.cwd.as_deref());
@@ -303,7 +329,7 @@ async fn context_handler(input: &NormalizedHookInput, worker: &WorkerClient) -> 
         encode_component(&project),
         encode_component(platform_source(&input.platform))
     );
-    let context = worker.get_text(&path).await?.unwrap_or_default();
+    let context = worker.get_text_with_retry(&path).await?.unwrap_or_default();
     Ok(context_output("SessionStart", context.trim()))
 }
 

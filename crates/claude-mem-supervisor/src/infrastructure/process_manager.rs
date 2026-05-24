@@ -258,7 +258,7 @@ pub fn spawn_daemon(
 
     let mut command = Command::new(executable_path);
     command
-        .arg("--daemon")
+        .args(worker_daemon_args(executable_path))
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -275,6 +275,18 @@ pub fn spawn_daemon(
     }
 
     command.spawn().ok().map(|child| child.id())
+}
+
+fn worker_daemon_args(executable_path: &Path) -> Vec<&'static str> {
+    let file_name = executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if matches!(file_name, "claude-mem" | "claude-mem-rs") {
+        vec!["worker", "--daemon"]
+    } else {
+        vec!["--daemon"]
+    }
 }
 
 fn default_pid_path() -> PathBuf {

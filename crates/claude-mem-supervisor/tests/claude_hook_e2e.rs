@@ -58,13 +58,39 @@ async fn claude_hook_round_trip_creates_memory_and_injects_context() {
     assert_eq!(context.exit_code, 0);
     let hook_output = context.output.hook_specific_output.unwrap();
     assert_eq!(hook_output.hook_event_name, "SessionStart");
-    assert!(hook_output.additional_context.contains("Read tool use"));
     assert!(hook_output
         .additional_context
-        .contains("Dynatron thermal memories"));
+        .starts_with("# [cloudy-fork] recent context,"));
+    assert!(hook_output.additional_context.contains("Context Index:"));
+    assert!(hook_output
+        .additional_context
+        .contains("Fetch details: get_observations([IDs])"));
+    assert!(hook_output.additional_context.contains("Read tool use"));
     let system_message = context.output.system_message.unwrap();
     assert!(system_message.contains("Read tool use"));
+    assert!(system_message.contains("Context Index:"));
     assert!(system_message.contains("View Observations Live @"));
+
+    let semantic = execute_hook(
+        "claude-code",
+        "session-init",
+        json!({
+            "session_id": "claude-hook-content-e2e-next",
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "prompt": "Use prior Dynatron thermal memory when deciding fan and wattage behavior."
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    let semantic_context = semantic
+        .output
+        .hook_specific_output
+        .unwrap()
+        .additional_context;
+    assert!(semantic_context.starts_with("## Relevant Past Work"));
+    assert!(semantic_context.contains("| ID | Time | T | Title | Read |"));
+    assert!(semantic_context.contains("Read tool use"));
 
     let complete_input = json!({
         "session_id": "claude-hook-content-e2e",
@@ -171,6 +197,36 @@ async fn cursor_gemini_and_codex_adapters_create_searchable_memory() {
     .unwrap();
     assert_eq!(codex_obs.exit_code, 0);
 
+    let opencode_init = execute_hook(
+        "opencode",
+        "session-init",
+        json!({
+            "session_id": "opencode-content-e2e",
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "prompt": "Remember opencode lifecycle plugin memory."
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(opencode_init.exit_code, 0);
+
+    let opencode_obs = execute_hook(
+        "opencode",
+        "observation",
+        json!({
+            "session_id": "opencode-content-e2e",
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "tool_name": "shell",
+            "tool_input": { "command": "cat opencode.md" },
+            "tool_response": { "output": "opencode plugin stores tool memory." }
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(opencode_obs.exit_code, 0);
+
     let context = execute_hook(
         "claude-code",
         "context",
@@ -187,9 +243,12 @@ async fn cursor_gemini_and_codex_adapters_create_searchable_memory() {
         .hook_specific_output
         .unwrap()
         .additional_context;
-    assert!(additional_context.contains("Cursor found package power cap memory"));
-    assert!(additional_context.contains("Gemini learned power caps"));
-    assert!(additional_context.contains("Codex adapter stores raw hook memory"));
+    assert!(additional_context.starts_with("# [cloudy-fork] recent context,"));
+    assert!(additional_context.contains("Fetch details: get_observations([IDs])"));
+    assert!(additional_context.contains("Bash tool use"));
+    assert!(additional_context.contains("GeminiAgent tool use"));
+    assert!(additional_context.contains("Read tool use"));
+    assert!(additional_context.contains("shell tool use"));
 
     let _ = shutdown.send(());
 }

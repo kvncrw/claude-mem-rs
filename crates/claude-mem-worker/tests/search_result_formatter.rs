@@ -204,3 +204,35 @@ fn search_tips_include_workflow_and_filters() {
     assert!(tips.contains("dateStart"));
     assert!(tips.contains("orderBy"));
 }
+
+#[test]
+fn formats_recent_context_like_boot_memory_index() {
+    let formatter = ResultFormatter::new();
+    let formatted = formatter.format_recent_context(
+        "test-project",
+        &SearchResults {
+            observations: vec![mock_observation()],
+            sessions: vec![mock_session()],
+            prompts: Vec::new(),
+        },
+    );
+
+    assert!(formatted.starts_with("# [test-project] recent context,"));
+    assert!(formatted.contains("Legend: session-request"));
+    assert!(formatted.contains("Fetch details: get_observations([IDs])"));
+    assert!(formatted.contains("Context Index:"));
+    assert!(formatted.contains("Stats: 1 obs"));
+    assert!(formatted.contains("#S1"));
+    assert!(formatted.contains("#1"));
+    assert!(formatted.contains("| ID | Time | T | Title | Read |"));
+    assert!(formatted.contains("Access "));
+}
+
+#[test]
+fn recent_context_has_readable_empty_state() {
+    let formatted =
+        ResultFormatter::new().format_recent_context("empty-project", &SearchResults::default());
+
+    assert!(formatted.starts_with("# [empty-project] recent context,"));
+    assert!(formatted.contains("No previous sessions found for this project yet."));
+}

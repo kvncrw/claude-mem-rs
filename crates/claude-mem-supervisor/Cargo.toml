@@ -18,6 +18,7 @@ path = "src/bin/claude-mem.rs"
 
 [dependencies]
 claude-mem-core = { workspace = true }
+claude-mem-mcp = { workspace = true }
 claude-mem-worker = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }

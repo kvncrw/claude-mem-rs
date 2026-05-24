@@ -6,3 +6,4 @@ pub mod infrastructure;
 pub mod installer;
 pub mod supervisor;
 pub mod transcripts;
+pub mod worker_runtime;

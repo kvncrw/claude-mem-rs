@@ -109,6 +109,127 @@ impl ResultFormatter {
         lines.join("\n")
     }
 
+    pub fn format_recent_context(&self, project: &str, results: &SearchResults) -> String {
+        let total_results = results.observations.len() + results.sessions.len();
+        if total_results == 0 {
+            return format!(
+                "# [{project}] recent context, {}\n\nNo previous sessions found for this project yet.",
+                format_context_timestamp()
+            );
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "# [{project}] recent context, {}",
+            format_context_timestamp()
+        ));
+        lines.push(String::new());
+        lines.push("Legend: session-request | B bugfix | F feature | R refactor | C change | I discovery | D decision".into());
+        lines.push("Format: ID TIME TYPE TITLE".into());
+        lines.push("Fetch details: get_observations([IDs]) | Search: mem-search skill".into());
+        lines.push(String::new());
+        lines.push("Context Index: This index is usually enough to understand past work.".into());
+        lines.push(
+            "When implementation details are needed, fetch visible observation IDs or search history."
+                .into(),
+        );
+        lines.push(String::new());
+
+        let read_tokens: usize = results
+            .observations
+            .iter()
+            .map(|obs| self.estimate_read_tokens(obs))
+            .sum();
+        let work_tokens: i64 = results
+            .observations
+            .iter()
+            .map(|obs| obs.discovery_tokens)
+            .sum::<i64>()
+            + results
+                .sessions
+                .iter()
+                .map(|session| session.discovery_tokens)
+                .sum::<i64>();
+        lines.push(format!(
+            "Stats: {} obs ({}t read) | {}t work",
+            results.observations.len(),
+            read_tokens,
+            work_tokens
+        ));
+        lines.push(String::new());
+
+        let mut combined = Vec::new();
+        combined.extend(
+            results
+                .observations
+                .iter()
+                .cloned()
+                .map(|obs| CombinedResult {
+                    result_type: "observation",
+                    epoch: obs.created_at_epoch,
+                    created_at: obs.created_at.clone(),
+                    data: CombinedData::Observation(obs),
+                }),
+        );
+        combined.extend(
+            results
+                .sessions
+                .iter()
+                .cloned()
+                .map(|session| CombinedResult {
+                    result_type: "session",
+                    epoch: session.created_at_epoch,
+                    created_at: session.created_at.clone(),
+                    data: CombinedData::Session(session),
+                }),
+        );
+        combined.sort_by(|a, b| a.epoch.cmp(&b.epoch));
+
+        let mut current_day = String::new();
+        let mut current_file = String::new();
+        let mut last_time = String::new();
+
+        for result in combined {
+            let day = format_date(result.epoch);
+            if day != current_day {
+                current_day = day.clone();
+                current_file.clear();
+                last_time.clear();
+                lines.push(format!("### {day}"));
+                lines.push(String::new());
+            }
+
+            match &result.data {
+                CombinedData::Session(session) => {
+                    let row = self.format_session_search_row(session, &last_time);
+                    last_time = row.time;
+                    lines.push(row.row);
+                    lines.push(String::new());
+                }
+                CombinedData::Observation(obs) => {
+                    let file = extract_first_file(obs);
+                    if file != current_file {
+                        current_file = file.clone();
+                        last_time.clear();
+                        lines.push(format!("**{file}**"));
+                        lines.push(self.format_search_table_header());
+                    }
+                    let row = self.format_observation_search_row(obs, &last_time);
+                    last_time = row.time;
+                    lines.push(row.row);
+                }
+                CombinedData::Prompt(_) => {}
+            }
+        }
+
+        lines.push(String::new());
+        lines.push(format!(
+            "Access {}k tokens of past research and decisions via get_observations([IDs]) or mem-search.",
+            (work_tokens.max(0) as f64 / 1000.0).round() as i64
+        ));
+        lines.join("\n").trim_end().to_owned()
+    }
+
     pub fn combine_results(&self, results: &SearchResults) -> Vec<CombinedResult> {
         let mut combined = Vec::with_capacity(
             results.observations.len() + results.sessions.len() + results.prompts.len(),
@@ -332,6 +453,23 @@ fn format_date(epoch_ms: i64) -> String {
         _ => "Dec",
     };
     format!("{} {}, {}", month, dt.day(), dt.year())
+}
+
+fn format_context_timestamp() -> String {
+    let now = OffsetDateTime::now_utc();
+    let hour = now.hour();
+    let minute = now.minute();
+    let suffix = if hour >= 12 { "PM" } else { "AM" };
+    let hour12 = match hour % 12 {
+        0 => 12,
+        value => value,
+    };
+    format!(
+        "{:04}-{:02}-{:02} {hour12}:{minute:02} {suffix} UTC",
+        now.year(),
+        now.month() as u8,
+        now.day()
+    )
 }
 
 fn extract_first_file(obs: &ObservationRow) -> String {
