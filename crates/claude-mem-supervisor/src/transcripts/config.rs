@@ -119,10 +119,41 @@ pub fn expand_home_path(input: impl AsRef<str>) -> PathBuf {
     if value == "~" {
         return home_dir();
     }
-    if let Some(rest) = value.strip_prefix("~/") {
+    // Accept either POSIX (`~/foo`) or Windows (`~\foo`) separators so the
+    // same config JSON works on both hosts.
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
         return home_dir().join(rest);
     }
     PathBuf::from(value)
+}
+
+#[cfg(test)]
+mod expand_home_path_tests {
+    use super::*;
+
+    #[test]
+    fn tilde_alone_returns_home() {
+        assert_eq!(expand_home_path("~"), home_dir());
+    }
+
+    #[test]
+    fn tilde_slash_expands_under_home() {
+        assert_eq!(expand_home_path("~/foo"), home_dir().join("foo"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tilde_backslash_expands_under_home_on_windows() {
+        assert_eq!(expand_home_path(r"~\foo\bar"), home_dir().join(r"foo\bar"));
+    }
+
+    #[test]
+    fn non_tilde_passes_through() {
+        assert_eq!(expand_home_path("/etc/hosts"), PathBuf::from("/etc/hosts"));
+    }
 }
 
 pub fn load_config(path: &Path) -> Result<TranscriptWatchConfig> {

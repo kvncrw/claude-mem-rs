@@ -176,10 +176,7 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/branch/switch", post(branch_switch))
         .route("/api/branch/update", post(branch_update))
         .route("/api/corpus", get(corpus_list).post(corpus_build))
-        .route(
-            "/api/corpus/:name",
-            get(corpus_get).delete(corpus_delete),
-        )
+        .route("/api/corpus/:name", get(corpus_get).delete(corpus_delete))
         .route("/api/corpus/:name/rebuild", post(corpus_rebuild))
         .route("/api/corpus/:name/prime", post(corpus_prime))
         .route("/api/corpus/:name/query", post(corpus_query))

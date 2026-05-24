@@ -3002,7 +3002,13 @@ pub async fn corpus_rebuild(
     let corpus = {
         let conn = state.conn.lock().unwrap();
         builder
-            .build(&conn, &store, &name, &existing.description, existing.filter.clone())
+            .build(
+                &conn,
+                &store,
+                &name,
+                &existing.description,
+                existing.filter.clone(),
+            )
             .map_err(corpus_builder_error)?
     };
     Ok(Json(corpus_metadata(&corpus)))

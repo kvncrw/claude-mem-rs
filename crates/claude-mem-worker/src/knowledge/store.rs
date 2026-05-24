@@ -77,12 +77,11 @@ impl CorpusStore {
     pub fn write(&self, corpus: &CorpusFile) -> Result<(), CorpusStoreError> {
         self.ensure_dir()?;
         let path = self.path_for(&corpus.name)?;
-        let body = serde_json::to_string_pretty(corpus).map_err(|source| {
-            CorpusStoreError::Json {
+        let body =
+            serde_json::to_string_pretty(corpus).map_err(|source| CorpusStoreError::Json {
                 path: path.clone(),
                 source,
-            }
-        })?;
+            })?;
         fs::write(&path, body).map_err(|source| CorpusStoreError::Io {
             path: path.clone(),
             source,
@@ -176,9 +175,7 @@ impl CorpusStore {
         if trimmed.is_empty() || !is_valid_corpus_name(trimmed) {
             return Err(CorpusStoreError::InvalidName);
         }
-        let candidate = self
-            .corpora_dir
-            .join(format!("{trimmed}.corpus.json"));
+        let candidate = self.corpora_dir.join(format!("{trimmed}.corpus.json"));
         // Defence in depth: the regex already forbids `/` and `\`, but reject
         // any name that doesn't resolve under the corpora dir anyway.
         if candidate.parent() != Some(self.corpora_dir.as_path()) {

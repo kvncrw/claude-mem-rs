@@ -377,13 +377,16 @@ fn send_signal(pid: i64, signal: Signal) {
         return;
     }
     // Windows console apps don't get a separable SIGTERM signal here. The
-    // best lossy mapping: a soft kill with no `/F` for Term, a forced tree
-    // kill for Kill. This mirrors what `taskkill` documents.
+    // best lossy mapping mirrors `taskkill`:
+    //   Term -> `/T` (tree) without `/F` so the process can run its
+    //           shutdown handlers (WM_CLOSE / CTRL_BREAK on the console
+    //           process group);
+    //   Kill -> `/F /T` (force + tree) so nothing survives.
     let mut args: Vec<String> = Vec::new();
     if matches!(signal, Signal::Kill) {
         args.push("/F".to_owned());
-        args.push("/T".to_owned());
     }
+    args.push("/T".to_owned());
     args.push("/PID".to_owned());
     args.push(pid.to_string());
     let _ = Command::new("taskkill")

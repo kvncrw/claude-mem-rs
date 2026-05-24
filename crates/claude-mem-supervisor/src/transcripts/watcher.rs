@@ -89,7 +89,13 @@ impl TranscriptWatcher {
 
     fn resolve_watch_files(&self, watch: &WatchTarget) -> Result<Vec<PathBuf>> {
         let path = expand_home_path(&watch.path);
-        let path_string = path.display().to_string();
+        // The `glob` crate's pattern syntax is POSIX-style: backslashes are
+        // treated as escape characters even on Windows, so a literal Windows
+        // path like `C:\Users\me\.codex\sessions\**\*.jsonl` would never
+        // match. Normalise the pattern to forward-slashes for glob expansion
+        // (the `glob` crate accepts forward-slashes on Windows and yields
+        // canonical `PathBuf`s back).
+        let path_string = path_to_glob_pattern(&path);
         if has_glob(&path_string) {
             let mut files = Vec::new();
             for entry in glob::glob(&path_string)? {
@@ -120,7 +126,7 @@ impl TranscriptWatcher {
         file: &Path,
         stats: &mut WatchRunStats,
     ) -> Result<()> {
-        let file_key = file.display().to_string();
+        let file_key = state_key_for_path(file);
         let metadata = fs::metadata(file)?;
         let len = metadata.len();
         let is_initial_discovery = self.known_files.insert(file.to_path_buf());
@@ -141,9 +147,7 @@ impl TranscriptWatcher {
         let mut data = String::new();
         file_handle.read_to_string(&mut data)?;
         let consumed = len;
-        self.state
-            .offsets
-            .insert(file.display().to_string(), consumed);
+        self.state.offsets.insert(file_key, consumed);
 
         let session_id_override = extract_session_id_from_path(file);
         for line in data.lines() {
@@ -192,6 +196,35 @@ fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Render `path` as a `glob` crate pattern. On Windows the pattern is
+/// normalised to forward-slashes (the `C:` drive prefix is left intact)
+/// because backslashes are escape characters in `glob` syntax. On Unix the
+/// path is rendered as-is.
+fn path_to_glob_pattern(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.display().to_string().replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.display().to_string()
+    }
+}
+
+/// Render `path` as a state-file key. Normalising to forward-slashes on
+/// Windows means a transcript file's offset survives across runs even if
+/// callers thread `\` and `/` separators into the same path differently.
+fn state_key_for_path(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.display().to_string().replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.display().to_string()
+    }
+}
+
 fn extract_session_id_from_path(path: &Path) -> Option<String> {
     let text = path.display().to_string();
     for part in text.split(|ch: char| !(ch.is_ascii_hexdigit() || ch == '-')) {
@@ -205,4 +238,44 @@ fn extract_session_id_from_path(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn has_glob_detects_meta_chars() {
+        assert!(has_glob("/a/**/*.jsonl"));
+        assert!(has_glob("foo?bar"));
+        assert!(!has_glob("/a/b/c.jsonl"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_glob_pattern_normalises_backslashes() {
+        let p = std::path::PathBuf::from(r"C:\Users\me\.codex\sessions\**\*.jsonl");
+        let pattern = super::path_to_glob_pattern(&p);
+        assert_eq!(pattern, "C:/Users/me/.codex/sessions/**/*.jsonl");
+        // glob crate must accept this pattern shape without panicking.
+        let _ = glob::Pattern::new(&pattern).expect("normalised pattern compiles");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn state_key_normalises_mixed_separators_on_windows() {
+        let mixed = std::path::PathBuf::from(r"C:\Users\me/.codex\sessions/abc.jsonl");
+        let key = super::state_key_for_path(&mixed);
+        assert_eq!(key, "C:/Users/me/.codex/sessions/abc.jsonl");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_to_glob_pattern_is_identity_on_unix() {
+        let p = std::path::PathBuf::from("/home/me/.codex/sessions/**/*.jsonl");
+        assert_eq!(
+            super::path_to_glob_pattern(&p),
+            "/home/me/.codex/sessions/**/*.jsonl"
+        );
+    }
 }

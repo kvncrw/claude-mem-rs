@@ -1,13 +1,13 @@
 use claude_mem_core::db::observations::store::store_observation;
 use claude_mem_core::db::sessions::{create_session, update_memory_session_id};
-use claude_mem_core::types::ObservationInput;
 use claude_mem_core::types::session::CreateSessionInput;
-use claude_mem_supervisor::hooks::{WorkerClient, execute_hook};
-use claude_mem_worker::http::router::{AppState, build_router_with_state};
+use claude_mem_core::types::ObservationInput;
+use claude_mem_supervisor::hooks::{execute_hook, WorkerClient};
+use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 async fn spawn_worker() -> (WorkerClient, oneshot::Sender<()>) {
     let app = build_router_with_state(AppState::in_memory().unwrap());
@@ -132,17 +132,13 @@ async fn claude_hook_round_trip_creates_memory_and_injects_context() {
     assert_eq!(context.exit_code, 0);
     let hook_output = context.output.hook_specific_output.unwrap();
     assert_eq!(hook_output.hook_event_name, "SessionStart");
-    assert!(
-        hook_output
-            .additional_context
-            .starts_with("# [cloudy-fork] recent context,")
-    );
+    assert!(hook_output
+        .additional_context
+        .starts_with("# [cloudy-fork] recent context,"));
     assert!(hook_output.additional_context.contains("Context Index:"));
-    assert!(
-        hook_output
-            .additional_context
-            .contains("Fetch details: get_observations([IDs])")
-    );
+    assert!(hook_output
+        .additional_context
+        .contains("Fetch details: get_observations([IDs])"));
     assert!(hook_output.additional_context.contains("Read tool use"));
     let system_message = context.output.system_message.unwrap();
     assert!(system_message.contains("Read tool use"));
@@ -202,18 +198,14 @@ async fn claude_session_start_waits_for_delayed_worker_readiness() {
     let hook_output = context.output.hook_specific_output.unwrap();
     assert_eq!(hook_output.hook_event_name, "SessionStart");
     assert!(hook_output.additional_context.contains("Context Index:"));
-    assert!(
-        hook_output
-            .additional_context
-            .contains("Delayed readiness boot memory")
-    );
-    assert!(
-        context
-            .output
-            .system_message
-            .unwrap()
-            .contains("View Observations Live @")
-    );
+    assert!(hook_output
+        .additional_context
+        .contains("Delayed readiness boot memory"));
+    assert!(context
+        .output
+        .system_message
+        .unwrap()
+        .contains("View Observations Live @"));
 
     let _ = shutdown.send(());
 }

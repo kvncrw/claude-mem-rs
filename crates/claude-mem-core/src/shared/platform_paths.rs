@@ -31,11 +31,10 @@ pub fn home_dir_with_env(env: EnvLookup<'_>) -> PathBuf {
         if let Some(value) = env("USERPROFILE").filter(|v| !v.is_empty()) {
             return PathBuf::from(value);
         }
-        if let (Some(drive), Some(path)) = (env("HOMEDRIVE"), env("HOMEPATH")) {
+        if let (Some(mut drive), Some(path)) = (env("HOMEDRIVE"), env("HOMEPATH")) {
             if !drive.is_empty() && !path.is_empty() {
-                let mut joined = OsString::from(drive);
-                joined.push(path);
-                return PathBuf::from(joined);
+                drive.push(path);
+                return PathBuf::from(drive);
             }
         }
         if let Some(value) = env("HOME").filter(|v| !v.is_empty()) {

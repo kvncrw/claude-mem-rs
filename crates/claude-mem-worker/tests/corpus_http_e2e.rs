@@ -157,8 +157,7 @@ async fn corpus_http_routes_build_list_get_rebuild_and_delete() {
         "types": ["decision"],
         "limit": 10
     });
-    let (status, built) =
-        json_request(app.clone(), Method::POST, "/api/corpus", build_body).await;
+    let (status, built) = json_request(app.clone(), Method::POST, "/api/corpus", build_body).await;
     assert_eq!(status, StatusCode::OK, "build failed: {built}");
     assert_eq!(built["name"], "alpha-decisions");
     assert_eq!(built["description"], "Alpha project decisions only");
@@ -196,7 +195,10 @@ async fn corpus_http_routes_build_list_get_rebuild_and_delete() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["name"], "alpha-decisions");
     assert_eq!(got["stats"]["observation_count"], 2);
-    let corpus_path = home.path().join("corpora").join("alpha-decisions.corpus.json");
+    let corpus_path = home
+        .path()
+        .join("corpora")
+        .join("alpha-decisions.corpus.json");
     let on_disk: Value =
         serde_json::from_str(&std::fs::read_to_string(&corpus_path).unwrap()).unwrap();
     let on_disk_obs = on_disk["observations"].as_array().unwrap();
@@ -279,11 +281,7 @@ async fn corpus_prime_query_reprime_return_501_when_feature_disabled() {
             "/api/corpus/prime-target/query",
             json!({ "question": "what changed?" }),
         ),
-        (
-            Method::POST,
-            "/api/corpus/prime-target/reprime",
-            json!({}),
-        ),
+        (Method::POST, "/api/corpus/prime-target/reprime", json!({})),
     ] {
         let (status, body) = json_request(app.clone(), method.clone(), uri, body).await;
         assert_eq!(
@@ -293,8 +291,7 @@ async fn corpus_prime_query_reprime_return_501_when_feature_disabled() {
         );
         let message = body["error"].as_str().unwrap_or_default();
         assert!(
-            message.contains("knowledge-agent")
-                && message.contains("not available"),
+            message.contains("knowledge-agent") && message.contains("not available"),
             "{uri} 501 body should explain the disabled feature; got {message:?}"
         );
     }

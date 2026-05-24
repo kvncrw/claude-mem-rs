@@ -152,9 +152,7 @@ impl ClaudeBackend for ClaudeCliBackend {
         disallowed: &[&str],
     ) -> Result<ClaudeInvocation, KnowledgeAgentError> {
         let mut cmd = Command::new(&self.executable);
-        cmd.arg("--print")
-            .arg("--output-format")
-            .arg("stream-json");
+        cmd.arg("--print").arg("--output-format").arg("stream-json");
         if let Some(session) = resume {
             cmd.arg("--resume").arg(session);
         }
@@ -222,7 +220,10 @@ impl ClaudeBackend for ClaudeCliBackend {
 /// look like `{"type":"assistant","session_id":"...","message":{"content":[...]}}`
 /// or `{"type":"result","session_id":"..."}`. We tolerate unknown fields and
 /// unknown frame types.
-fn apply_stream_frame(invocation: &mut ClaudeInvocation, line: &str) -> Result<(), KnowledgeAgentError> {
+fn apply_stream_frame(
+    invocation: &mut ClaudeInvocation,
+    line: &str,
+) -> Result<(), KnowledgeAgentError> {
     let frame: Value = serde_json::from_str(line)?;
     if let Some(session) = frame.get("session_id").and_then(Value::as_str) {
         invocation.session_id = Some(session.to_owned());
@@ -516,10 +517,7 @@ mod tests {
             renderer: CorpusRenderer::new(),
         };
         let mut corpus = fixture_corpus();
-        let err = agent
-            .query(&mut corpus, &store, "what?")
-            .await
-            .unwrap_err();
+        let err = agent.query(&mut corpus, &store, "what?").await.unwrap_err();
         matches!(err, KnowledgeAgentError::NotPrimed(_));
     }
 
@@ -565,10 +563,7 @@ mod tests {
         };
         let mut corpus = fixture_corpus();
         agent.prime(&mut corpus, &store).await.unwrap();
-        let err = agent
-            .query(&mut corpus, &store, "what?")
-            .await
-            .unwrap_err();
+        let err = agent.query(&mut corpus, &store, "what?").await.unwrap_err();
         assert!(matches!(err, KnowledgeAgentError::Io(_)));
         // 1 prime + 1 failed query = 2 (no reprime, no retry).
         assert_eq!(backend.call_count(), 2);
