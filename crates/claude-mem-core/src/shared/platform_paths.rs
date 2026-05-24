@@ -2,8 +2,8 @@
 //!
 //! Resolution order (`claude_mem_home`):
 //! 1. `CLAUDE_MEM_HOME`
-//! 2. `<home>/.claude-mem`, where `<home>` is `USERPROFILE` on Windows and
-//!    `HOME` on Unix.
+//! 2. `<home>/.claude-mem`, where `<home>` is `USERPROFILE`,
+//!    `HOMEDRIVE` + `HOMEPATH`, or `HOME` on Windows and `HOME` on Unix.
 //! 3. `./.claude-mem` as a last-resort relative fallback.
 //!
 //! Each public helper has a `_with_env` variant that takes an env lookup
@@ -37,6 +37,9 @@ pub fn home_dir_with_env(env: EnvLookup<'_>) -> PathBuf {
                 joined.push(path);
                 return PathBuf::from(joined);
             }
+        }
+        if let Some(value) = env("HOME").filter(|v| !v.is_empty()) {
+            return PathBuf::from(value);
         }
     } else if let Some(value) = env("HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(value);
@@ -198,5 +201,15 @@ mod tests {
     fn windows_home_composes_homedrive_homepath() {
         let env = env_map(&[("HOMEDRIVE", "D:"), ("HOMEPATH", "\\Users\\Bob")]);
         assert_eq!(home_dir_with_env(&env), PathBuf::from("D:\\Users\\Bob"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_falls_back_to_home_for_posix_shells() {
+        let env = env_map(&[("HOME", "C:\\msys64\\home\\alice")]);
+        assert_eq!(
+            home_dir_with_env(&env),
+            PathBuf::from("C:\\msys64\\home\\alice")
+        );
     }
 }
