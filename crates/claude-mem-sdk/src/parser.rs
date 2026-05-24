@@ -38,11 +38,24 @@ pub fn parse_observations(text: &str, _correlation_id: Option<&str>) -> Vec<Pars
                 .into_iter()
                 .filter(|concept| concept != &observation_type)
                 .collect();
+            let fallback_content = extract_field(&content, "content");
+            let mut facts = extract_array_elements(&content, "facts", "fact");
+            if facts.is_empty() {
+                if let Some(value) = fallback_content.clone() {
+                    facts.push(value);
+                }
+            }
 
             ParsedObservation {
-                title: extract_field(&content, "title").unwrap_or_default(),
-                narrative: extract_field(&content, "narrative"),
-                facts: extract_array_elements(&content, "facts", "fact"),
+                title: extract_field(&content, "title")
+                    .or_else(|| {
+                        fallback_content
+                            .as_deref()
+                            .map(observation_title_from_content)
+                    })
+                    .unwrap_or_default(),
+                narrative: extract_field(&content, "narrative").or(fallback_content),
+                facts,
                 concepts,
                 files_read: extract_array_elements(&content, "files_read", "file"),
                 files_modified: extract_array_elements(&content, "files_modified", "file"),
@@ -114,6 +127,15 @@ fn extract_field(content: &str, tag: &str) -> Option<String> {
     let end = content[start..].find(&close)? + start;
     let value = content[start..end].trim();
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn observation_title_from_content(content: &str) -> String {
+    let mut title = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.chars().count() > 80 {
+        title = title.chars().take(77).collect::<String>();
+        title.push_str("...");
+    }
+    title
 }
 
 fn extract_array_elements(content: &str, array_tag: &str, element_tag: &str) -> Vec<String> {

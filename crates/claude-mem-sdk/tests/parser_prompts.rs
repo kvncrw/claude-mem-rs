@@ -24,6 +24,18 @@ fn parser_extracts_observations_and_summaries() {
     assert_eq!(observations[0].title, "Use Qdrant");
     assert_eq!(observations[0].concepts, vec!["qdrant"]);
 
+    let sparse = parse_observations(
+        r#"<observation><type>durable_memory_marker</type><content>launcher OpenRouter marker</content></observation>"#,
+        Some("test"),
+    );
+    assert_eq!(sparse[0].r#type, "discovery");
+    assert_eq!(sparse[0].title, "launcher OpenRouter marker");
+    assert_eq!(sparse[0].facts, vec!["launcher OpenRouter marker"]);
+    assert_eq!(
+        sparse[0].narrative.as_deref(),
+        Some("launcher OpenRouter marker")
+    );
+
     let summary = parse_summary(
         r#"<summary><request>Port memory</request><learned>Prompt builders matter.</learned></summary>"#,
         Some("session"),

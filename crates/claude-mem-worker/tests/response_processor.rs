@@ -92,6 +92,28 @@ fn parses_single_and_multiple_observations() {
 }
 
 #[test]
+fn parses_sparse_content_observation_from_loose_provider_output() {
+    let observations = parse_observations(
+        r#"<observation><type>durable_memory_marker</type><content>claude-mem-rs live cutover hook marker</content></observation>"#,
+    );
+
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].r#type, "discovery");
+    assert_eq!(
+        observations[0].title.as_deref(),
+        Some("claude-mem-rs live cutover hook marker")
+    );
+    assert_eq!(
+        observations[0].narrative.as_deref(),
+        Some("claude-mem-rs live cutover hook marker")
+    );
+    assert_eq!(
+        observations[0].facts,
+        vec!["claude-mem-rs live cutover hook marker"]
+    );
+}
+
+#[test]
 fn parses_summary_and_skip_summary() {
     let summary = parse_summary(
         r#"

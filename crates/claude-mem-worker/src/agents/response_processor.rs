@@ -240,13 +240,24 @@ pub fn parse_observations(text: &str) -> Vec<ParsedObservation> {
                 .into_iter()
                 .filter(|concept| concept != &observation_type)
                 .collect();
+            let fallback_content = extract_field(&content, "content");
+            let mut facts = extract_array_elements(&content, "facts", "fact");
+            if facts.is_empty() {
+                if let Some(value) = fallback_content.clone() {
+                    facts.push(value);
+                }
+            }
 
             ParsedObservation {
                 r#type: observation_type,
-                title: extract_field(&content, "title"),
+                title: extract_field(&content, "title").or_else(|| {
+                    fallback_content
+                        .as_deref()
+                        .map(observation_title_from_content)
+                }),
                 subtitle: extract_field(&content, "subtitle"),
-                facts: extract_array_elements(&content, "facts", "fact"),
-                narrative: extract_field(&content, "narrative"),
+                facts,
+                narrative: extract_field(&content, "narrative").or(fallback_content),
                 concepts,
                 files_read: extract_array_elements(&content, "files_read", "file"),
                 files_modified: extract_array_elements(&content, "files_modified", "file"),
@@ -404,6 +415,15 @@ fn extract_field(content: &str, field_name: &str) -> Option<String> {
     } else {
         Some(value.to_owned())
     }
+}
+
+fn observation_title_from_content(content: &str) -> String {
+    let mut title = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.chars().count() > 80 {
+        title = title.chars().take(77).collect::<String>();
+        title.push_str("...");
+    }
+    title
 }
 
 fn extract_array_elements(content: &str, array_name: &str, element_name: &str) -> Vec<String> {
