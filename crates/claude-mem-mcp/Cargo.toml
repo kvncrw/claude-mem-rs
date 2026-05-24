@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Stdio MCP server over worker HTTP (rmcp-based) for claude-mem-rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 claude-mem-core = { workspace = true }
 claude-mem-worker = { workspace = true }
@@ -20,3 +23,4 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+tempfile = { workspace = true }

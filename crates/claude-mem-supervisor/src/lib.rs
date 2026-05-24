@@ -1,5 +1,6 @@
 //! claude-mem-supervisor — process lifecycle, health checks, hook pipeline.
 
+pub mod claude_md;
 pub mod hooks;
 pub mod infrastructure;
 pub mod installer;

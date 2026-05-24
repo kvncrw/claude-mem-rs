@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "HTTP API, search strategies, session/queue management for claude-mem-rs"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 chroma = []

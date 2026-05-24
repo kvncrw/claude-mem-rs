@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Process lifecycle, health checks, hook pipeline for claude-mem-rs"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "hook"
 path = "src/bin/hook.rs"
@@ -17,6 +20,7 @@ path = "src/bin/claude-mem.rs"
 claude-mem-core = { workspace = true }
 claude-mem-worker = { workspace = true }
 tokio = { workspace = true }
+rusqlite = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

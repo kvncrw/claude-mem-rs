@@ -1,6 +1,6 @@
 //! Optional Qdrant vector store.
 
-use claude_mem_core::types::ObservationRow;
+use claude_mem_core::types::{ObservationRow, SessionSummaryRow, UserPromptRow};
 use reqwest::StatusCode;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,9 @@ use crate::search::vector::{embed_text, DEFAULT_EMBEDDING_DIM};
 
 const DEFAULT_QDRANT_URL: &str = "http://127.0.0.1:6333";
 const DEFAULT_COLLECTION: &str = "claude_mem_observations";
+const SCHEMA_VERSION: i64 = 2;
+const SUMMARY_ID_OFFSET: u64 = 1_000_000_000_000;
+const PROMPT_ID_OFFSET: u64 = 2_000_000_000_000;
 
 #[derive(Debug, Error)]
 pub enum QdrantError {
@@ -99,6 +102,7 @@ impl QdrantClient {
                     "vector": embed_text_with_config(&observation_text(row), self.config.vector_size),
                     "payload": {
                         "kind": "observation",
+                        "schema_version": SCHEMA_VERSION,
                         "observation_id": row.id,
                         "project": row.project,
                         "type": row.r#type,
@@ -111,6 +115,75 @@ impl QdrantClient {
                 })
             })
             .collect::<Vec<_>>();
+
+        let response = self
+            .request(
+                self.client
+                    .put(format!("{}/points?wait=true", self.collection_url())),
+            )
+            .json(&json!({ "points": points }))
+            .send()
+            .await?;
+        expect_success(response).await
+    }
+
+    pub async fn upsert_memory_points(
+        &self,
+        observations: &[ObservationRow],
+        summaries: &[SessionSummaryRow],
+        prompts: &[PromptPoint],
+    ) -> Result<(), QdrantError> {
+        if observations.is_empty() && summaries.is_empty() && prompts.is_empty() {
+            return Ok(());
+        }
+        self.ensure_collection().await?;
+        let mut points = Vec::new();
+        points.extend(observations.iter().map(|row| {
+            json!({
+                "id": row.id as u64,
+                "vector": embed_text_with_config(&observation_text(row), self.config.vector_size),
+                "payload": {
+                    "kind": "observation",
+                    "schema_version": SCHEMA_VERSION,
+                    "observation_id": row.id,
+                    "project": row.project,
+                    "type": row.r#type,
+                    "title": row.title,
+                    "created_at_epoch": row.created_at_epoch,
+                    "concepts": row.concepts,
+                    "files_read": row.files_read,
+                    "files_modified": row.files_modified,
+                }
+            })
+        }));
+        points.extend(summaries.iter().map(|row| {
+            json!({
+                "id": SUMMARY_ID_OFFSET + row.id as u64,
+                "vector": embed_text_with_config(&summary_text(row), self.config.vector_size),
+                "payload": {
+                    "kind": "summary",
+                    "schema_version": SCHEMA_VERSION,
+                    "summary_id": row.id,
+                    "project": row.project,
+                    "created_at_epoch": row.created_at_epoch,
+                    "memory_session_id": row.memory_session_id,
+                }
+            })
+        }));
+        points.extend(prompts.iter().map(|row| {
+            json!({
+                "id": PROMPT_ID_OFFSET + row.prompt.id as u64,
+                "vector": embed_text_with_config(&row.prompt.prompt_text, self.config.vector_size),
+                "payload": {
+                    "kind": "prompt",
+                    "schema_version": SCHEMA_VERSION,
+                    "prompt_id": row.prompt.id,
+                    "project": row.project,
+                    "created_at_epoch": row.prompt.created_at_epoch,
+                    "content_session_id": row.prompt.content_session_id,
+                }
+            })
+        }));
 
         let response = self
             .request(
@@ -147,6 +220,33 @@ impl QdrantClient {
             .result
             .into_iter()
             .filter_map(|point| point.observation_id())
+            .collect())
+    }
+
+    pub async fn search_memory_refs(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<MemoryPointRef>, QdrantError> {
+        self.ensure_collection().await?;
+        let limit = limit.clamp(1, 100) as usize;
+        let response = self
+            .request(
+                self.client
+                    .post(format!("{}/points/search", self.collection_url())),
+            )
+            .json(&json!({
+                "vector": embed_text_with_config(query, self.config.vector_size),
+                "limit": limit,
+                "with_payload": true,
+            }))
+            .send()
+            .await?;
+        let body = expect_json::<QdrantSearchResponse>(response).await?;
+        Ok(body
+            .result
+            .into_iter()
+            .filter_map(|point| point.memory_ref())
             .collect())
     }
 
@@ -200,6 +300,40 @@ pub async fn search_observations(
     Ok(rows)
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptPoint {
+    pub prompt: UserPromptRow,
+    pub project: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryPointRef {
+    Observation(i64),
+    Summary(i64),
+    Prompt(i64),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemoryPointRefs {
+    pub observations: Vec<i64>,
+    pub summaries: Vec<i64>,
+    pub prompts: Vec<i64>,
+}
+
+impl MemoryPointRefs {
+    pub fn from_refs(refs: Vec<MemoryPointRef>) -> Self {
+        let mut out = Self::default();
+        for item in refs {
+            match item {
+                MemoryPointRef::Observation(id) => push_unique(&mut out.observations, id),
+                MemoryPointRef::Summary(id) => push_unique(&mut out.summaries, id),
+                MemoryPointRef::Prompt(id) => push_unique(&mut out.prompts, id),
+            }
+        }
+        out
+    }
+}
+
 fn matches_options(row: &ObservationRow, options: &StrategySearchOptions) -> bool {
     options
         .project
@@ -234,6 +368,27 @@ fn observation_text(row: &ObservationRow) -> String {
     .flatten()
     .collect::<Vec<_>>()
     .join("\n")
+}
+
+fn summary_text(row: &SessionSummaryRow) -> String {
+    [
+        row.request.as_deref(),
+        row.investigated.as_deref(),
+        row.learned.as_deref(),
+        row.completed.as_deref(),
+        row.next_steps.as_deref(),
+        row.notes.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+fn push_unique(ids: &mut Vec<i64>, id: i64) {
+    if !ids.contains(&id) {
+        ids.push(id);
+    }
 }
 
 fn embed_text_with_config(text: &str, vector_size: usize) -> Vec<f32> {
@@ -286,6 +441,34 @@ impl QdrantPoint {
             .and_then(|payload| payload.get("observation_id"))
             .and_then(Value::as_i64)
             .or_else(|| self.id.as_i64())
+    }
+
+    fn memory_ref(&self) -> Option<MemoryPointRef> {
+        let payload = self.payload.as_ref()?;
+        match payload.get("kind").and_then(Value::as_str) {
+            Some("observation") => payload
+                .get("observation_id")
+                .and_then(Value::as_i64)
+                .or_else(|| self.id.as_i64())
+                .map(MemoryPointRef::Observation),
+            Some("summary") => payload
+                .get("summary_id")
+                .and_then(Value::as_i64)
+                .map(MemoryPointRef::Summary),
+            Some("prompt") => payload
+                .get("prompt_id")
+                .and_then(Value::as_i64)
+                .map(MemoryPointRef::Prompt),
+            _ => self.id.as_u64().and_then(|id| {
+                if id >= PROMPT_ID_OFFSET {
+                    Some(MemoryPointRef::Prompt((id - PROMPT_ID_OFFSET) as i64))
+                } else if id >= SUMMARY_ID_OFFSET {
+                    Some(MemoryPointRef::Summary((id - SUMMARY_ID_OFFSET) as i64))
+                } else {
+                    Some(MemoryPointRef::Observation(id as i64))
+                }
+            }),
+        }
     }
 }
 

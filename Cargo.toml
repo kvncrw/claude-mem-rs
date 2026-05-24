@@ -15,6 +15,9 @@ license = "AGPL-3.0"
 authors = ["Kevin Crawley"]
 repository = "https://github.com/kvncrw/claude-mem-rs"
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)"] }
+
 [workspace.dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }

@@ -26,7 +26,7 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - search helpers by file, concept, and type
 - timeline expansion around a search result
 - semantic context lookup through SQLite FTS5
-- optional self-hosted Qdrant indexing/search for observations
+- optional self-hosted Qdrant indexing/search for observations, prompts, and summaries
 - Claude, Cursor, Gemini CLI, Codex, and raw hook adapter normalization
 - context injection
 - session completion hook
@@ -35,17 +35,17 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - import/export, settings, logs, project/stats, processing-status, and guarded branch admin routes
 - MCP save/search/timeline/fetch tools over the worker
 - native observer queue processing for queued observations and summaries
-- local/fake deterministic observer runners plus Claude CLI, Gemini REST, and OpenRouter REST provider runners
+- local/fake deterministic observer runners plus Claude CLI, Gemini REST/CLI, Codex CLI, and OpenRouter REST provider runners
 - tier model selection metadata for queued simple-tool and summary work
 - browser viewer shell with live SSE events for session, observation, summary, queue, and manual-memory lifecycle changes
 - Claude Stop/summarize transcript JSONL extraction for summary generation, with system-reminder stripping and completion cleanup
 - rich built-in browser viewer for feed/search/timeline/context/admin/queue/logs/settings workflows
 - POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, and Codex transcript integration
 - generic JSONL transcript watcher daemon with v12-compatible schema config, offset state, tool pairing, summaries, and AGENTS context updates
+- folder `CLAUDE.md` memory-context generation and cleanup
+- MCP smart file search/outline/unfold helpers backed by the local filesystem
 
-Queued observation and summary routes now drain through the Rust observer processor. The default provider is `local`, which deterministically converts hook payloads into recallable XML-backed memory without external credentials. Set `CLAUDE_MEM_PROVIDER=claude`, `gemini`, `openrouter`, or `fake` to use the corresponding runner.
-
-The remaining TypeScript-only surfaces include folder `CLAUDE.md` regeneration/cleanup flows and deeper real-provider hardening.
+Queued observation and summary routes now drain through the Rust observer processor. The default provider is `local`, which deterministically converts hook payloads into recallable XML-backed memory without external credentials. Set `CLAUDE_MEM_PROVIDER=claude`, `gemini`, `gemini-cli`, `codex`, `openrouter`, or `fake` to use the corresponding runner.
 
 ## Build And Test
 
@@ -55,7 +55,12 @@ cargo test --workspace
 cargo test -p claude-mem-worker --features qdrant
 ```
 
-Known warning: `bon::Builder` currently emits `unexpected cfg condition name: rust_analyzer` warnings during builds. The test suite is otherwise green.
+Optional live provider smoke coverage is gated because it calls real CLIs/APIs:
+
+```bash
+CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1 cargo test -p claude-mem-worker --test live_provider_smoke -- --nocapture
+CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1 CLAUDE_MEM_LIVE_OPENROUTER_SMOKE=1 cargo test -p claude-mem-worker --test live_provider_smoke -- --nocapture
+```
 
 ## Runtime Layout
 
@@ -99,7 +104,7 @@ export CLAUDE_MEM_QDRANT_URL=http://127.0.0.1:6333
 export CLAUDE_MEM_QDRANT_COLLECTION=claude_mem_observations
 ```
 
-The Rust worker uses a deterministic local hash embedding, so Qdrant does not require an embedding API key. SQLite remains the source of truth; if Qdrant is disabled or unavailable, memory writes and search fall back to SQLite.
+The Rust worker uses a deterministic local hash embedding, so Qdrant does not require an embedding API key. SQLite remains the source of truth; if Qdrant is disabled or unavailable, memory writes and search fall back to SQLite. Qdrant payloads include schema metadata and distinguish observation, prompt, and summary points.
 
 Qdrant endpoints:
 
@@ -127,6 +132,8 @@ The worker processes pending observations and summaries through the observer que
 export CLAUDE_MEM_PROVIDER=local        # default deterministic local runner
 export CLAUDE_MEM_PROVIDER=claude       # shells out to claude
 export CLAUDE_MEM_PROVIDER=gemini       # uses Gemini REST API
+export CLAUDE_MEM_PROVIDER=gemini-cli   # shells out to gemini
+export CLAUDE_MEM_PROVIDER=codex        # shells out to codex exec
 export CLAUDE_MEM_PROVIDER=openrouter   # uses OpenRouter REST API
 ```
 
@@ -137,7 +144,9 @@ export CLAUDE_MEM_MODEL=sonnet
 export CLAUDE_MEM_TIER_SIMPLE_MODEL=haiku
 export CLAUDE_MEM_TIER_SUMMARY_MODEL=opus
 export CLAUDE_MEM_CLAUDE_COMMAND=claude
-export CLAUDE_MEM_CLAUDE_ARGS="-p"
+export CLAUDE_MEM_CLAUDE_ARGS='-p --output-format json --tools "" --permission-mode dontAsk'
+export CLAUDE_MEM_GEMINI_COMMAND=gemini
+export CLAUDE_MEM_CODEX_COMMAND=codex
 export CLAUDE_MEM_GEMINI_API_KEY=...
 export CLAUDE_MEM_OPENROUTER_API_KEY=...
 ```
@@ -220,6 +229,24 @@ cargo run -p claude-mem-mcp
 ```
 
 The MCP process expects the worker to be reachable through `CLAUDE_MEM_WORKER_URL` or `CLAUDE_MEM_WORKER_PORT`.
+
+The MCP server exposes memory save/search/timeline/fetch tools plus smart file helpers:
+
+- `smart_search`
+- `smart_outline`
+- `smart_unfold`
+
+## Folder CLAUDE.md Context
+
+Generate folder-local Claude context files from the SQLite memory store:
+
+```bash
+cargo run -p claude-mem-supervisor --bin claude-mem -- generate --root /repo/my-project --project my-project --dry-run
+cargo run -p claude-mem-supervisor --bin claude-mem -- generate --root /repo/my-project --project my-project
+cargo run -p claude-mem-supervisor --bin claude-mem -- clean --root /repo/my-project
+```
+
+The generated block is tagged with `claude-mem-context`, so cleanup removes only Rust-port managed content and preserves user-authored `CLAUDE.md` text.
 
 ## Data Compatibility
 

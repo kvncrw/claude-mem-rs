@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use claude_mem_supervisor::claude_md::{clean, generate, print_report, ClaudeMdOptions};
 use claude_mem_supervisor::installer::{
     detect_ides, print_install_report, run_install, run_uninstall, InstallOptions, UninstallOptions,
 };
@@ -46,6 +47,16 @@ async fn run() -> Result<i32> {
             let subcommand = args.get(1).map(String::as_str);
             run_transcript_command(subcommand, &args[2..]).await
         }
+        "generate" | "generate-claude-md" => {
+            let report = generate(claude_md_options(&args)?)?;
+            print_report("generate", &report);
+            Ok(if report.errors.is_empty() { 0 } else { 1 })
+        }
+        "clean" | "clean-claude-md" => {
+            let report = clean(claude_md_options(&args)?)?;
+            print_report("clean", &report);
+            Ok(if report.errors.is_empty() { 0 } else { 1 })
+        }
         "version" | "--version" | "-v" => {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(0)
@@ -60,9 +71,25 @@ async fn run() -> Result<i32> {
 
 fn print_help() {
     println!(
-        "claude-mem-rs {}\n\nCommands:\n  install [--ide <ids>] [--yes] [--dry-run] [--bin <path>]\n  uninstall [--yes] [--dry-run]\n  detect\n  transcript <init|validate|process|watch> [--config <path>] [--once]\n  version\n",
+        "claude-mem-rs {}\n\nCommands:\n  install [--ide <ids>] [--yes] [--dry-run] [--bin <path>]\n  uninstall [--yes] [--dry-run]\n  detect\n  transcript <init|validate|process|watch> [--config <path>] [--once]\n  generate [--dry-run] [--root <path>] [--db <path>] [--project <name>] [--target <CLAUDE.md>] [--limit <n>]\n  clean [--dry-run] [--root <path>] [--target <CLAUDE.md>]\n  version\n",
         env!("CARGO_PKG_VERSION")
     );
+}
+
+fn claude_md_options(args: &[String]) -> Result<ClaudeMdOptions> {
+    Ok(ClaudeMdOptions {
+        dry_run: has_flag(args, "--dry-run"),
+        project_root: arg_value(args, "--root")
+            .map(Into::into)
+            .unwrap_or(std::env::current_dir()?),
+        db_path: arg_value(args, "--db").map(Into::into),
+        project: arg_value(args, "--project"),
+        target_file: arg_value(args, "--target"),
+        limit: arg_value(args, "--limit")
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(50),
+    })
 }
 
 fn has_flag(args: &[String], flag: &str) -> bool {

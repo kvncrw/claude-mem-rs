@@ -276,6 +276,78 @@ async fn worker_qdrant_strategy_falls_back_to_sqlite_when_not_enabled() {
     assert_eq!(search["observations"][0]["title"], "SQLite fallback");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn worker_qdrant_reindex_populates_observations_summaries_and_prompts() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let (url, state) = spawn_fake_qdrant().await;
+    std::env::set_var("CLAUDE_MEM_QDRANT_URL", url);
+    std::env::set_var("CLAUDE_MEM_QDRANT_COLLECTION", "worker_reindex_all");
+
+    let app = build_router_with_state(AppState::in_memory().unwrap());
+    let (status, _init) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "qdrant-full-session",
+            "project": "cloudy-fork",
+            "prompt": "Remember prompt qdrant population."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _save) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/memory/save",
+        json!({
+            "project": "cloudy-fork",
+            "title": "Qdrant observation",
+            "text": "Observation vector population works."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _summary) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/summarize",
+        json!({
+            "contentSessionId": "qdrant-full-session",
+            "summary": "<summary><request>Qdrant</request><learned>Summary vector population works.</learned><completed>Done</completed></summary>"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, reindex) = json_request(
+        app,
+        Method::POST,
+        "/api/vector/qdrant/reindex",
+        json!({ "project": "cloudy-fork", "limit": 100 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reindex["success"], true);
+    assert_eq!(reindex["observations"], 1);
+    assert_eq!(reindex["summaries"], 1);
+    assert_eq!(reindex["prompts"], 1);
+
+    let upsert = state.upsert_body.lock().unwrap().clone().unwrap();
+    let kinds = upsert["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|point| point["payload"]["kind"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"observation".to_owned()));
+    assert!(kinds.contains(&"summary".to_owned()));
+    assert!(kinds.contains(&"prompt".to_owned()));
+
+    std::env::remove_var("CLAUDE_MEM_QDRANT_URL");
+    std::env::remove_var("CLAUDE_MEM_QDRANT_COLLECTION");
+}
+
 #[tokio::test]
 async fn real_qdrant_smoke_when_url_is_supplied() {
     let Ok(url) = std::env::var("QDRANT_URL") else {

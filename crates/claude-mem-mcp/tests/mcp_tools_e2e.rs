@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use claude_mem_mcp::server::{
-    ClaudeMemMcp, GetObservationsParams, SaveMemoryParams, SearchParams, TimelineParams,
-    WorkerClient,
+    ClaudeMemMcp, GetObservationsParams, SaveMemoryParams, SearchParams, SmartOutlineParams,
+    SmartSearchParams, SmartUnfoldParams, TimelineParams, WorkerClient,
 };
 use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use rmcp::handler::server::tool::Parameters;
@@ -94,6 +94,39 @@ async fn mcp_tools_save_search_timeline_and_fetch_worker_memory() {
 
     let important = mcp.important().await.unwrap();
     assert!(result_text(&important).contains("search"));
+
+    let source = tempfile::TempDir::new().unwrap();
+    let src = source.path().join("thermal.rs");
+    std::fs::write(
+        &src,
+        "pub fn package_power_cap() -> u32 {\n    65\n}\n\nstruct FanCurve;\n",
+    )
+    .unwrap();
+    let smart = mcp
+        .smart_search(Parameters(SmartSearchParams {
+            query: "package power".into(),
+            path: Some(source.path().display().to_string()),
+            max_results: Some(5),
+            file_pattern: None,
+        }))
+        .await
+        .unwrap();
+    assert!(result_text(&smart).contains("package_power_cap"));
+    let outline = mcp
+        .smart_outline(Parameters(SmartOutlineParams {
+            file_path: src.display().to_string(),
+        }))
+        .await
+        .unwrap();
+    assert!(result_text(&outline).contains("FanCurve"));
+    let unfold = mcp
+        .smart_unfold(Parameters(SmartUnfoldParams {
+            file_path: src.display().to_string(),
+            symbol_name: "package_power_cap".into(),
+        }))
+        .await
+        .unwrap();
+    assert!(result_text(&unfold).contains("65"));
 
     let empty_ids = mcp
         .get_observations(Parameters(GetObservationsParams { ids: Vec::new() }))

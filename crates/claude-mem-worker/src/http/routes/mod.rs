@@ -46,7 +46,9 @@ use crate::agents::observer::{
 };
 use crate::agents::response_processor::parse_summary;
 #[cfg(feature = "qdrant")]
-use crate::search::qdrant::{QdrantClient, QdrantConfig, QdrantStatus};
+use crate::search::qdrant::{
+    MemoryPointRefs, PromptPoint, QdrantClient, QdrantConfig, QdrantStatus,
+};
 use crate::search::result_formatter::{ResultFormatter, SearchResults};
 use crate::search::strategies::{
     DateRange, OrderBy, SearchStrategyHint, SearchType, SqliteSearchStrategy, StrategySearchOptions,
@@ -358,7 +360,7 @@ pub async fn sessions_init(
     let cleaned_prompt = strip_private_tags(&prompt).trim().to_owned();
     let (created_at, created_at_epoch) = now_timestamp();
 
-    let (session_db_id, prompt_number, context_injected) = {
+    let (session_db_id, prompt_number, context_injected, prompt_id) = {
         let conn = state.conn.lock().unwrap();
         create_session(
             &conn,
@@ -389,7 +391,7 @@ pub async fn sessions_init(
             }));
         }
 
-        save_user_prompt(
+        let prompt_id = save_user_prompt(
             &conn,
             &PromptInput {
                 content_session_id: req.content_session_id.clone(),
@@ -405,8 +407,10 @@ pub async fn sessions_init(
             session.id,
             prompt_number,
             session.memory_session_id.is_some(),
+            prompt_id,
         )
     };
+    index_prompt_ids_if_enabled(&state, &[prompt_id]).await;
 
     match process_session_init(
         Arc::clone(&state.conn),
@@ -621,6 +625,9 @@ pub async fn sessions_complete(
         }
         true
     };
+    if let Some(id) = summary_id {
+        index_summary_ids_if_enabled(&state, &[id]).await;
+    }
     state.publish(
         "session_completed",
         json!({
@@ -657,8 +664,11 @@ pub async fn sessions_summarize(
         .map(|value| value.contains("<summary>") || value.contains("<skip_summary"))
         .unwrap_or(false)
     {
-        let conn = state.conn.lock().unwrap();
-        let id = store_generated_summary(&conn, &req.content_session_id, source.as_deref())?;
+        let id = {
+            let conn = state.conn.lock().unwrap();
+            store_generated_summary(&conn, &req.content_session_id, source.as_deref())?
+        };
+        index_summary_ids_if_enabled(&state, &[id]).await;
         state.publish(
             "summary_stored",
             json!({
@@ -1159,13 +1169,13 @@ pub async fn search(
         .unwrap_or_default();
     let options = search_options_from_query(&query, &q);
     #[cfg(feature = "qdrant")]
-    let (qdrant_ids, used_qdrant, fell_back) = if should_use_qdrant(&options, &q) {
+    let (qdrant_refs, used_qdrant, fell_back) = if should_use_qdrant(&options, &q) {
         match QdrantClient::from_env_if_enabled() {
             Some(client) => match client
-                .search_observation_ids(&q, parse_limit(query.get("limit"), 20) * 4)
+                .search_memory_refs(&q, parse_limit(query.get("limit"), 20) * 4)
                 .await
             {
-                Ok(ids) => (Some(ids), true, false),
+                Ok(refs) => (Some(MemoryPointRefs::from_refs(refs)), true, false),
                 Err(error) => {
                     tracing::warn!(%error, "qdrant search failed; falling back to sqlite");
                     (None, false, true)
@@ -1177,22 +1187,44 @@ pub async fn search(
         (None, false, false)
     };
     #[cfg(not(feature = "qdrant"))]
-    let (qdrant_ids, used_qdrant, fell_back): (Option<Vec<i64>>, bool, bool) = (None, false, false);
+    let (used_qdrant, fell_back): (bool, bool) = (false, false);
 
     let conn = state.conn.lock().unwrap();
     let result = SqliteSearchStrategy::new().search(&conn, &options);
-    let rows = if let Some(ids) = qdrant_ids {
-        get_observations_by_ids(&conn, &ids)
+    #[cfg(feature = "qdrant")]
+    let (rows, sessions, prompts) = if let Some(refs) = qdrant_refs {
+        let rows = get_observations_by_ids(&conn, &refs.observations)
             .map_err(ApiError::internal)?
             .into_iter()
             .filter(|row| observation_matches_options(row, &options))
             .take(parse_limit(query.get("limit"), 20) as usize)
-            .collect()
+            .collect();
+        let sessions = get_summaries_by_ids(&conn, &refs.summaries)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .filter(|row| summary_matches_options(row, &options))
+            .take(parse_limit(query.get("limit"), 20) as usize)
+            .collect();
+        let prompts = get_user_prompts_by_ids(&conn, &refs.prompts)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .filter(|row| prompt_matches_options(&conn, row, &options))
+            .take(parse_limit(query.get("limit"), 20) as usize)
+            .collect();
+        (rows, sessions, prompts)
     } else {
-        result.results.observations
+        (
+            result.results.observations,
+            result.results.sessions,
+            result.results.prompts,
+        )
     };
-    let sessions = result.results.sessions;
-    let prompts = result.results.prompts;
+    #[cfg(not(feature = "qdrant"))]
+    let (rows, sessions, prompts) = (
+        result.results.observations,
+        result.results.sessions,
+        result.results.prompts,
+    );
     let total_results = rows.len() + sessions.len() + prompts.len();
     if query.get("format").is_some_and(|format| format == "text") {
         let text = ResultFormatter::new().format_search_results(
@@ -1465,24 +1497,34 @@ pub async fn qdrant_reindex(
 ) -> ApiResult<Value> {
     let client = QdrantClient::from_env_if_enabled()
         .ok_or_else(|| ApiError::bad_request("qdrant is not enabled"))?;
-    let rows = {
+    let limit = req.limit.unwrap_or(100).clamp(1, 10_000);
+    let project = req.project.clone();
+    let (observations, summaries, prompts) = {
         let conn = state.conn.lock().unwrap();
-        query_observations(
+        let observations = query_observations(
             &conn,
             &ObservationQuery {
-                project: req.project,
-                limit: req.limit.unwrap_or(100).clamp(1, 10_000),
+                project: project.clone(),
+                limit,
             },
         )
-        .map_err(ApiError::internal)?
+        .map_err(ApiError::internal)?;
+        let summary_ids = list_ids(&conn, "session_summaries", project.as_deref(), limit)?;
+        let summaries = get_summaries_by_ids(&conn, &summary_ids).map_err(ApiError::internal)?;
+        let prompts = prompt_points_for_reindex(&conn, project.as_deref(), limit)?;
+        (observations, summaries, prompts)
     };
     client
-        .upsert_observations(&rows)
+        .upsert_memory_points(&observations, &summaries, &prompts)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(json!({
         "success": true,
-        "indexed": rows.len()
+        "indexed": observations.len() + summaries.len() + prompts.len(),
+        "observations": observations.len(),
+        "summaries": summaries.len(),
+        "prompts": prompts.len(),
+        "schemaVersion": 2
     })))
 }
 
@@ -1777,7 +1819,8 @@ pub async fn mcp_status() -> ApiResult<Value> {
     Ok(Json(json!({
         "enabled": true,
         "managedByRust": true,
-        "binary": "claude-mem-mcp"
+        "binary": "claude-mem-mcp",
+        "vulcan": vulcan_mcp_status()
     })))
 }
 
@@ -2517,6 +2560,7 @@ fn parse_epoch(value: &str) -> Option<i64> {
     })
 }
 
+#[cfg(feature = "qdrant")]
 fn observation_matches_options(
     row: &claude_mem_core::types::ObservationRow,
     options: &StrategySearchOptions,
@@ -2544,6 +2588,117 @@ fn observation_matches_options(
 }
 
 #[cfg(feature = "qdrant")]
+fn summary_matches_options(row: &SessionSummaryRow, options: &StrategySearchOptions) -> bool {
+    options
+        .project
+        .as_ref()
+        .is_none_or(|project| row.project == *project)
+        && options.date_range.as_ref().is_none_or(|range| {
+            range
+                .start_epoch
+                .is_none_or(|start| row.created_at_epoch >= start)
+                && range
+                    .end_epoch
+                    .is_none_or(|end| row.created_at_epoch <= end)
+        })
+}
+
+#[cfg(feature = "qdrant")]
+fn prompt_matches_options(
+    conn: &rusqlite::Connection,
+    row: &UserPromptRow,
+    options: &StrategySearchOptions,
+) -> bool {
+    let date_matches = options.date_range.as_ref().is_none_or(|range| {
+        range
+            .start_epoch
+            .is_none_or(|start| row.created_at_epoch >= start)
+            && range
+                .end_epoch
+                .is_none_or(|end| row.created_at_epoch <= end)
+    });
+    if !date_matches {
+        return false;
+    }
+    let Some(project) = &options.project else {
+        return true;
+    };
+    conn.query_row(
+        "SELECT 1 FROM sdk_sessions WHERE content_session_id = ?1 AND project = ?2 LIMIT 1",
+        rusqlite::params![row.content_session_id, project],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|value| value.is_some())
+    .unwrap_or(false)
+}
+
+fn vulcan_mcp_status() -> Value {
+    let configured_path = std::env::var("CLAUDE_MEM_VULCAN_SDK_PATH").ok();
+    let default_path = std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join("firefly/vulcan-mcp-sdk-rust"));
+    let detected_path = configured_path
+        .as_ref()
+        .map(PathBuf::from)
+        .or(default_path)
+        .filter(|path| path.exists());
+
+    json!({
+        "evaluated": true,
+        "available": detected_path.is_some(),
+        "sdkPath": detected_path.map(|path| path.display().to_string()),
+        "runtime": "rmcp",
+        "decision": "Vulcan SDK is detected for future adapter work; Rust MCP remains rmcp-backed to keep public builds self-contained."
+    })
+}
+
+#[cfg(feature = "qdrant")]
+fn prompt_points_for_reindex(
+    conn: &rusqlite::Connection,
+    project: Option<&str>,
+    limit: i64,
+) -> Result<Vec<PromptPoint>, ApiError> {
+    let mut sql = String::from(
+        "SELECT up.id, up.content_session_id, up.prompt_number, up.prompt_text,
+                up.created_at, up.created_at_epoch, COALESCE(s.project, '')
+           FROM user_prompts up
+           LEFT JOIN sdk_sessions s ON s.content_session_id = up.content_session_id",
+    );
+    if project.is_some() {
+        sql.push_str(" WHERE s.project = ?1");
+        sql.push_str(" ORDER BY up.created_at_epoch DESC, up.id DESC LIMIT ?2");
+    } else {
+        sql.push_str(" ORDER BY up.created_at_epoch DESC, up.id DESC LIMIT ?1");
+    }
+    let mut stmt = conn.prepare(&sql).map_err(ApiError::internal)?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok(PromptPoint {
+            prompt: UserPromptRow {
+                id: row.get(0)?,
+                content_session_id: row.get(1)?,
+                prompt_number: row.get(2)?,
+                prompt_text: row.get(3)?,
+                created_at: row.get(4)?,
+                created_at_epoch: row.get(5)?,
+            },
+            project: row.get(6)?,
+        })
+    };
+    let rows = if let Some(project) = project {
+        stmt.query_map(rusqlite::params![project, limit], map_row)
+            .map_err(ApiError::internal)?
+            .collect::<Result<Vec<_>, _>>()
+    } else {
+        stmt.query_map(rusqlite::params![limit], map_row)
+            .map_err(ApiError::internal)?
+            .collect::<Result<Vec<_>, _>>()
+    }
+    .map_err(ApiError::internal)?;
+    Ok(rows)
+}
+
+#[cfg(feature = "qdrant")]
 async fn index_observation_ids_if_enabled(state: &AppState, ids: &[i64]) {
     let Some(client) = QdrantClient::from_env_if_enabled() else {
         return;
@@ -2565,3 +2720,96 @@ async fn index_observation_ids_if_enabled(state: &AppState, ids: &[i64]) {
 
 #[cfg(not(feature = "qdrant"))]
 async fn index_observation_ids_if_enabled(_state: &AppState, _ids: &[i64]) {}
+
+#[cfg(feature = "qdrant")]
+async fn index_summary_ids_if_enabled(state: &AppState, ids: &[i64]) {
+    let Some(client) = QdrantClient::from_env_if_enabled() else {
+        return;
+    };
+    let rows = {
+        let conn = state.conn.lock().unwrap();
+        match get_summaries_by_ids(&conn, ids) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "failed to load summaries for qdrant indexing");
+                return;
+            }
+        }
+    };
+    if let Err(error) = client.upsert_memory_points(&[], &rows, &[]).await {
+        tracing::warn!(%error, "qdrant summary indexing failed");
+    }
+}
+
+#[cfg(not(feature = "qdrant"))]
+async fn index_summary_ids_if_enabled(_state: &AppState, _ids: &[i64]) {}
+
+#[cfg(feature = "qdrant")]
+async fn index_prompt_ids_if_enabled(state: &AppState, ids: &[i64]) {
+    let Some(client) = QdrantClient::from_env_if_enabled() else {
+        return;
+    };
+    let rows = {
+        let conn = state.conn.lock().unwrap();
+        match prompt_points_by_ids(&conn, ids) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(?error, "failed to load prompts for qdrant indexing");
+                return;
+            }
+        }
+    };
+    if let Err(error) = client.upsert_memory_points(&[], &[], &rows).await {
+        tracing::warn!(%error, "qdrant prompt indexing failed");
+    }
+}
+
+#[cfg(not(feature = "qdrant"))]
+async fn index_prompt_ids_if_enabled(_state: &AppState, _ids: &[i64]) {}
+
+#[cfg(feature = "qdrant")]
+fn prompt_points_by_ids(
+    conn: &rusqlite::Connection,
+    ids: &[i64],
+) -> Result<Vec<PromptPoint>, ApiError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT up.id, up.content_session_id, up.prompt_number, up.prompt_text,
+                    up.created_at, up.created_at_epoch, COALESCE(s.project, '')
+               FROM user_prompts up
+               LEFT JOIN sdk_sessions s ON s.content_session_id = up.content_session_id
+              WHERE up.id IN ({placeholders})"
+        ))
+        .map_err(ApiError::internal)?;
+    let params = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect::<Vec<_>>();
+    let mut rows = stmt
+        .query_map(params.as_slice(), |row| {
+            Ok(PromptPoint {
+                prompt: UserPromptRow {
+                    id: row.get(0)?,
+                    content_session_id: row.get(1)?,
+                    prompt_number: row.get(2)?,
+                    prompt_text: row.get(3)?,
+                    created_at: row.get(4)?,
+                    created_at_epoch: row.get(5)?,
+                },
+                project: row.get(6)?,
+            })
+        })
+        .map_err(ApiError::internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::internal)?;
+    rows.sort_by_key(|row| {
+        ids.iter()
+            .position(|id| *id == row.prompt.id)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(rows)
+}

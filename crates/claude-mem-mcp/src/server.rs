@@ -10,7 +10,9 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 
 const IMPORTANT_TEXT: &str = r#"# Memory Search Workflow
 
@@ -204,6 +206,71 @@ impl ClaudeMemMcp {
         Ok(json_text_result(&data)?)
     }
 
+    #[tool(
+        description = "Search source files for matching file names, symbols, and lines. Returns compact folded context instead of full files. Params: query, path, max_results, file_pattern.",
+        annotations(title = "Smart Search", read_only_hint = true)
+    )]
+    pub async fn smart_search(
+        &self,
+        Parameters(params): Parameters<SmartSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.query.trim().is_empty() {
+            return Err(McpError::invalid_params("query must not be empty", None));
+        }
+        let root = params
+            .path
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir().map_err(mcp_internal)?);
+        let result = smart_search_files(
+            &root,
+            &params.query,
+            params.max_results.unwrap_or(20).clamp(1, 100),
+            params.file_pattern.as_deref(),
+        )
+        .map_err(mcp_internal)?;
+        Ok(text_result(result))
+    }
+
+    #[tool(
+        description = "Get a compact structural outline of a source file. Params: file_path.",
+        annotations(title = "Smart Outline", read_only_hint = true)
+    )]
+    pub async fn smart_outline(
+        &self,
+        Parameters(params): Parameters<SmartOutlineParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let path = PathBuf::from(params.file_path);
+        let content = fs::read_to_string(&path).map_err(mcp_internal)?;
+        Ok(text_result(format_outline(&path, &content)))
+    }
+
+    #[tool(
+        description = "Expand a specific symbol from a source file. Params: file_path, symbol_name.",
+        annotations(title = "Smart Unfold", read_only_hint = true)
+    )]
+    pub async fn smart_unfold(
+        &self,
+        Parameters(params): Parameters<SmartUnfoldParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if params.symbol_name.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "symbol_name must not be empty",
+                None,
+            ));
+        }
+        let path = PathBuf::from(params.file_path);
+        let content = fs::read_to_string(&path).map_err(mcp_internal)?;
+        Ok(text_result(
+            unfold_symbol(&content, &params.symbol_name).unwrap_or_else(|| {
+                format!(
+                    "No symbol named {} found in {}",
+                    params.symbol_name,
+                    path.display()
+                )
+            }),
+        ))
+    }
+
     pub async fn worker_ready(&self) -> bool {
         self.worker.healthy().await
     }
@@ -261,6 +328,25 @@ pub struct SaveMemoryParams {
     pub project: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SmartSearchParams {
+    pub query: String,
+    pub path: Option<String>,
+    pub max_results: Option<usize>,
+    pub file_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SmartOutlineParams {
+    pub file_path: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SmartUnfoldParams {
+    pub file_path: String,
+    pub symbol_name: String,
+}
+
 pub async fn run_stdio() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -308,4 +394,271 @@ fn query_pairs(query: HashMap<String, String>) -> Vec<(String, String)> {
 
 fn mcp_internal(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(error.to_string(), None)
+}
+
+fn smart_search_files(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    file_pattern: Option<&str>,
+) -> anyhow::Result<String> {
+    let root = root.canonicalize()?;
+    let terms = query
+        .to_lowercase()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    let mut scanned = 0usize;
+    walk_source_files(&root, 20, &mut |path| {
+        if matches.len() >= max_results {
+            return;
+        }
+        let relative = path.strip_prefix(&root).unwrap_or(path);
+        let rel_text = relative.to_string_lossy();
+        if file_pattern.is_some_and(|pattern| !rel_text.contains(pattern)) {
+            return;
+        }
+        let Ok(content) = fs::read_to_string(path) else {
+            return;
+        };
+        if content.contains('\0') || content.len() > 512 * 1024 {
+            return;
+        }
+        scanned += 1;
+        let lower_path = rel_text.to_lowercase();
+        let lower_content = content.to_lowercase();
+        let score = terms
+            .iter()
+            .map(|term| {
+                usize::from(lower_path.contains(term)) * 5
+                    + usize::from(lower_content.contains(term))
+            })
+            .sum::<usize>();
+        if score == 0 {
+            return;
+        }
+        matches.push((score, path.to_path_buf(), content));
+    })?;
+    matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut out = vec![format!(
+        "Smart Search: \"{}\"\nScanned {} files, showing {} matches\n",
+        query,
+        scanned,
+        matches.len().min(max_results)
+    )];
+    for (_score, path, content) in matches.into_iter().take(max_results) {
+        out.push(format_outline(&path, &content));
+    }
+    Ok(out.join("\n\n"))
+}
+
+fn walk_source_files(
+    dir: &Path,
+    depth: usize,
+    visit: &mut impl FnMut(&Path),
+) -> anyhow::Result<()> {
+    if depth == 0 {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            if !ignored_dir(&path) {
+                let _ = walk_source_files(&path, depth - 1, visit);
+            }
+        } else if is_source_file(&path) {
+            visit(&path);
+        }
+    }
+    Ok(())
+}
+
+fn format_outline(path: &Path, content: &str) -> String {
+    let symbols = extract_symbols(content);
+    let language = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("text");
+    let mut out = vec![format!(
+        "{} ({language}, {} lines)",
+        path.display(),
+        content.lines().count()
+    )];
+    if symbols.is_empty() {
+        out.push("  No symbols detected; showing first matching lines only.".to_owned());
+        for (idx, line) in content.lines().take(12).enumerate() {
+            out.push(format!("{:>5}: {}", idx + 1, line.trim_end()));
+        }
+        return out.join("\n");
+    }
+    for symbol in symbols {
+        out.push(format!(
+            "  {:>5}-{:>5} {} {}",
+            symbol.start, symbol.end, symbol.kind, symbol.name
+        ));
+        out.push(format!("        {}", symbol.signature.trim()));
+    }
+    out.join("\n")
+}
+
+fn unfold_symbol(content: &str, symbol_name: &str) -> Option<String> {
+    let symbols = extract_symbols(content);
+    let symbol = symbols.into_iter().find(|symbol| {
+        symbol.name == symbol_name || symbol.name.ends_with(&format!(".{symbol_name}"))
+    })?;
+    let lines = content.lines().collect::<Vec<_>>();
+    let start = symbol.start.saturating_sub(1);
+    let end = symbol.end.min(lines.len());
+    Some(lines[start..end].join("\n"))
+}
+
+#[derive(Debug, Clone)]
+struct Symbol {
+    name: String,
+    kind: &'static str,
+    signature: String,
+    start: usize,
+    end: usize,
+}
+
+fn extract_symbols(content: &str) -> Vec<Symbol> {
+    let lines = content.lines().collect::<Vec<_>>();
+    let mut symbols = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let Some((kind, name)) = symbol_from_line(trimmed) else {
+            continue;
+        };
+        let end = find_symbol_end(&lines, idx);
+        symbols.push(Symbol {
+            name,
+            kind,
+            signature: trimmed.to_owned(),
+            start: idx + 1,
+            end,
+        });
+    }
+    symbols
+}
+
+fn symbol_from_line(line: &str) -> Option<(&'static str, String)> {
+    let prefixes = [
+        ("fn ", "function"),
+        ("pub fn ", "function"),
+        ("async fn ", "function"),
+        ("pub async fn ", "function"),
+        ("function ", "function"),
+        ("class ", "class"),
+        ("export class ", "class"),
+        ("struct ", "struct"),
+        ("pub struct ", "struct"),
+        ("enum ", "enum"),
+        ("pub enum ", "enum"),
+        ("trait ", "trait"),
+        ("pub trait ", "trait"),
+        ("impl ", "impl"),
+        ("def ", "function"),
+        ("interface ", "interface"),
+        ("type ", "type"),
+        ("const ", "const"),
+    ];
+    for (prefix, kind) in prefixes {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let name = rest
+                .split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == ':'))
+                .find(|part| !part.is_empty())?
+                .to_owned();
+            return Some((kind, name));
+        }
+    }
+    None
+}
+
+fn find_symbol_end(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0isize;
+    let mut saw_open = false;
+    for (idx, line) in lines.iter().enumerate().skip(start) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    saw_open = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        if saw_open && depth <= 0 && idx > start {
+            return idx + 1;
+        }
+        if !saw_open && idx > start && !line.starts_with(' ') && !line.starts_with('\t') {
+            return idx;
+        }
+    }
+    lines.len()
+}
+
+fn is_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some(
+            "rs" | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "py"
+                | "go"
+                | "java"
+                | "rb"
+                | "cpp"
+                | "cc"
+                | "cxx"
+                | "c"
+                | "h"
+                | "hpp"
+                | "swift"
+                | "kt"
+                | "kts"
+                | "php"
+                | "ex"
+                | "exs"
+                | "lua"
+                | "scala"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "zig"
+                | "toml"
+                | "yaml"
+                | "yml"
+                | "sql"
+                | "md"
+                | "mdx"
+        )
+    )
+}
+
+fn ignored_dir(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(
+            ".git"
+                | "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | ".next"
+                | "__pycache__"
+                | ".venv"
+                | "venv"
+                | ".cache"
+                | ".turbo"
+                | "coverage"
+        )
+    )
 }

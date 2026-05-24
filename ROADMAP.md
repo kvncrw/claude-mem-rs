@@ -15,22 +15,21 @@ Goal: add optional graph-backed memory for entities, relationships, decisions, f
 
 ## Qdrant Vector Search
 
-Status: initial optional self-hosted Qdrant support exists behind the worker `qdrant` feature.
+Status: optional self-hosted Qdrant support exists behind the worker `qdrant` feature.
 
 Implemented:
 
 - Observation point IDs are stable SQLite observation IDs.
 - Qdrant is feature-gated and runtime-gated by `CLAUDE_MEM_QDRANT_*` env vars.
 - Collection bootstrap is automatic.
-- New observations are indexed opportunistically after memory writes.
-- `/api/vector/qdrant/reindex` backfills recent/project-scoped observations.
-- `/api/search?strategy=qdrant` searches Qdrant and falls back to SQLite.
+- New observations, prompts, and generated/stored summaries are indexed opportunistically after writes.
+- `/api/vector/qdrant/reindex` backfills recent/project-scoped observations, prompts, and summaries.
+- `/api/search?strategy=qdrant` searches Qdrant, resolves typed memory refs back through SQLite, and falls back to SQLite.
+- Payloads include schema/version metadata and typed refs for observation, prompt, and summary points.
 - Unit/integration/e2e coverage uses a fake Qdrant server, plus optional `QDRANT_URL` smoke coverage.
 
 Remaining:
 
-- Add explicit schema/version metadata in collection payload or a sidecar marker.
-- Extend vector indexing beyond observations to prompts and summaries. SQLite FTS5 already indexes prompts and generated/stored summaries.
 - Add hybrid ranking that merges Qdrant scores with SQLite FTS5/BM25 results.
 - Add migration tooling for Chroma-to-Qdrant if an old Chroma directory is present.
 - Add containerized CI coverage for real Qdrant.
@@ -45,20 +44,23 @@ Implemented in Rust:
 - Session summary generation on explicit summarize calls and completion fallback.
 - Pending-message queue processing through native Rust observer runners.
 - Claude CLI, Gemini REST, OpenRouter REST, fake, and deterministic local observer providers.
+- Gemini CLI and Codex CLI observer providers.
 - Tier model selection for queued simple-tool and summary work.
 - Persistent SSE broadcaster for live observation, summary, session, queue, and manual-memory events.
 - Claude Stop/summarize transcript extraction with system-reminder stripping and session completion.
 - Rich browser UI for feed/search/timeline/context/admin/queue/logs/settings workflows.
 - POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, and Codex transcript setup.
 - Generic background transcript watcher daemon with schema config, offset state, tool pairing, summaries, and AGENTS context updates.
+- Real-provider smoke tests for Claude CLI, Gemini CLI, and Codex CLI behind `CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1`.
+- OpenRouter live smoke is available behind `CLAUDE_MEM_LIVE_OPENROUTER_SMOKE=1`; it requires a valid OpenRouter key.
+- Folder `CLAUDE.md` generation and cleanup with managed-block preservation.
+- MCP smart file search, outline, and unfold helper tools.
+- Vulcan MCP SDK detection is exposed from `/api/mcp/status`; the runtime remains `rmcp`-backed until Vulcan can be adopted without a local path dependency.
 
 Remaining:
 
-- Evaluate and integrate Vulcan MCP as a supported MCP runtime/backend for memory tooling where it improves local tool orchestration, installer UX, or cross-agent interoperability.
-- Harden Claude CLI resume/session-id capture against real Claude CLI JSON/stream output variants.
-- Add real-provider smoke tests behind explicit env gates for Claude, Gemini, and OpenRouter.
 - Expand provider fallback telemetry and retry reporting in admin routes.
-- Folder `CLAUDE.md` generation, cleanup, and file-context helper flows.
+- Promote Vulcan MCP from detected/evaluated to an optional build/runtime backend once the SDK can be consumed as a public crate or stable git dependency.
 
 ## Migration Principles
 
