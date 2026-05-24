@@ -107,11 +107,11 @@ pub struct TranscriptWatchConfig {
 }
 
 pub fn default_config_path() -> PathBuf {
-    home_dir().join(".claude-mem/transcript-watch.json")
+    claude_mem_core::shared::platform_paths::transcript_config_path()
 }
 
 pub fn default_state_path() -> PathBuf {
-    home_dir().join(".claude-mem/transcript-watch-state.json")
+    claude_mem_core::shared::platform_paths::transcript_state_path()
 }
 
 pub fn expand_home_path(input: impl AsRef<str>) -> PathBuf {
@@ -334,7 +334,5 @@ fn match_in(path: &str, values: &[&str]) -> MatchRule {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    claude_mem_core::shared::platform_paths::home_dir()
 }

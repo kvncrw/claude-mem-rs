@@ -74,11 +74,7 @@ impl AppState {
 }
 
 pub fn default_db_path() -> PathBuf {
-    let home = std::env::var_os("CLAUDE_MEM_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude-mem")))
-        .unwrap_or_else(|| PathBuf::from(".claude-mem"));
-    home.join("claude-mem.db")
+    claude_mem_core::shared::platform_paths::default_db_path()
 }
 
 pub fn build_router() -> Router {

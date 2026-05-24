@@ -12,7 +12,26 @@ This repository is a Rust workspace that replaces the TypeScript/Bun runtime wit
 - `claude-mem-sdk`: parser and prompt-building helpers with no service I/O dependencies.
 - `claude-mem-supervisor`: process, health, PID, shutdown, and hook support code.
 
-Windows is not a supported target. The runtime assumes Linux/macOS/POSIX process behavior.
+Linux and macOS are the supported runtime targets. Windows is a *work-in-progress* — see [Windows status](#windows-status) below.
+
+## Windows status
+
+The Rust port now builds on Windows hosts (tracked in [#6](https://github.com/kvncrw/claude-mem-rs/issues/6)). The first compatibility pass covers:
+
+- Platform-aware path resolution (`USERPROFILE` / `HOMEDRIVE`+`HOMEPATH` / `APPDATA`) via `claude_mem_core::shared::platform_paths`, honouring `CLAUDE_MEM_HOME` and `CLAUDE_MEM_DATA_DIR` first.
+- `is_process_alive` / `force_kill_process` / `send_signal` shells out to `tasklist` and `taskkill` instead of `kill(pid, 0)` and `SIGTERM`/`SIGKILL`.
+- Daemon spawn uses `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` creation flags instead of `setsid`.
+- `bun` detection accepts `bun.exe` and `bun.cmd`; daemon-arg detection strips `.exe`/`.EXE` so `claude-mem.exe` is recognised as the multiplexed CLI.
+- `command_exists` uses `where` on Windows and `sh -c command -v` on Unix.
+
+Not yet wired (intentional follow-ups):
+
+- `claude-mem install` / `uninstall` still bail on Windows. The IDE integrations emit POSIX `sh` launchers (e.g. `#!/usr/bin/env sh` for the plugin shim) and hard-code `~/.claude/...` style layouts. A Windows install path needs PowerShell/`cmd` launchers, `%APPDATA%` config locations, and `bun.cmd` shim handling.
+- No `windows-latest` row in CI yet; Linux tests cover the cross-platform helpers but Windows-specific arms still need a runner to exercise the live `tasklist`/`taskkill`/`creation_flags` code.
+- Transcript watcher globs are not exercised against Windows path separators.
+- Process registry's `taskkill` mapping does not differentiate `Term` from a hard kill the way Unix signals do.
+
+If you are running the worker or MCP server directly (`cargo run -p claude-mem-worker`, `cargo run -p claude-mem-mcp`) on Windows, the binaries should function. The unified `claude-mem` installer should be skipped.
 
 ## Status
 

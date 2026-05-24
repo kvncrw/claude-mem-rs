@@ -426,11 +426,7 @@ fn target_filename(value: Option<String>) -> String {
 }
 
 fn default_db_path() -> PathBuf {
-    std::env::var_os("CLAUDE_MEM_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude-mem")))
-        .unwrap_or_else(|| PathBuf::from(".claude-mem"))
-        .join("claude-mem.db")
+    claude_mem_core::shared::platform_paths::default_db_path()
 }
 
 fn type_icon(kind: &str) -> &'static str {

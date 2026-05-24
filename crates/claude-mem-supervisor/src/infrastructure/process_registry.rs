@@ -1,9 +1,12 @@
 //! Process registry — JSON-backed supervisor child-process index (port of
 //! `src/supervisor/process-registry.ts`).
 
+use claude_mem_core::shared::platform_paths;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use thiserror::Error;
@@ -122,10 +125,7 @@ impl ProcessRegistry {
     }
 
     pub fn default_path() -> PathBuf {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        home.join(".claude-mem").join("supervisor.json")
+        platform_paths::claude_mem_home().join("supervisor.json")
     }
 
     pub fn with_default_path() -> Self {
@@ -328,9 +328,29 @@ fn is_pid_alive_platform(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn is_pid_alive_platform(pid: i32) -> bool {
-    pid == std::process::id() as i32
+    // Match the shell-out check used by process_manager so both views of
+    // liveness stay consistent on Windows.
+    let Ok(output) = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim_start().starts_with('"'))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_pid_alive_platform(_pid: i32) -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -351,7 +371,30 @@ fn send_signal(pid: i64, signal: Signal) {
     let _ = unsafe { libc::kill(pid as i32, sig) };
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn send_signal(pid: i64, signal: Signal) {
+    if pid <= 0 || pid > i64::from(i32::MAX) {
+        return;
+    }
+    // Windows console apps don't get a separable SIGTERM signal here. The
+    // best lossy mapping: a soft kill with no `/F` for Term, a forced tree
+    // kill for Kill. This mirrors what `taskkill` documents.
+    let mut args: Vec<String> = Vec::new();
+    if matches!(signal, Signal::Kill) {
+        args.push("/F".to_owned());
+        args.push("/T".to_owned());
+    }
+    args.push("/PID".to_owned());
+    args.push(pid.to_string());
+    let _ = Command::new("taskkill")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn send_signal(_pid: i64, _signal: Signal) {}
 
 async fn wait_until_dead(records: &[ManagedProcessRecord], timeout: Duration) {
