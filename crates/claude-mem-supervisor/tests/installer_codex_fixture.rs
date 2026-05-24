@@ -40,6 +40,13 @@ fn isolate_env(home: &std::path::Path) {
     std::env::remove_var("CLAUDE_MEM_HOME");
     std::env::remove_var("CLAUDE_MEM_DATA_DIR");
     std::env::remove_var("CLAUDE_MEM_WORKER_URL");
+    // See installer_cursor_fixture::isolate_env for the rationale.
+    #[cfg(windows)]
+    {
+        std::env::set_var("USERPROFILE", home);
+        std::env::remove_var("HOMEDRIVE");
+        std::env::remove_var("HOMEPATH");
+    }
 }
 
 fn install_codex_only() {
