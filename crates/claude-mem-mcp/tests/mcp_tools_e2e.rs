@@ -7,7 +7,7 @@ use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use rmcp::handler::server::tool::Parameters;
 use rmcp::model::RawContent;
 use rmcp::ServerHandler;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 #[tokio::test]
@@ -58,15 +58,11 @@ async fn mcp_tools_save_search_timeline_and_fetch_worker_memory() {
         }))
         .await
         .unwrap();
-    let search_json = result_json(&search);
-    assert_eq!(search_json["count"], 2);
-    let anchor = search_json["observations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|observation| observation["title"] == "Dynatron cap")
-        .and_then(|observation| observation["id"].as_i64())
-        .unwrap();
+    let search_text = result_text(&search);
+    assert!(search_text.contains("Found 2 result(s)"));
+    assert!(search_text.contains("Dynatron cap"));
+    assert!(!search_text.contains("\"observations\""));
+    let anchor = save_json["id"].as_i64().unwrap();
 
     let timeline = mcp
         .timeline(Parameters(TimelineParams {
@@ -137,6 +133,58 @@ async fn mcp_tools_save_search_timeline_and_fetch_worker_memory() {
         .await
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn mcp_search_returns_compact_index_when_matching_huge_prompts() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let huge_prompt = format!(
+        "searchable kiwifarms prompt\n{}\noversized-prompt-tail",
+        "x".repeat(250_000)
+    );
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/api/sessions/init"))
+        .json(&json!({
+            "contentSessionId": "huge-prompt-session",
+            "project": "huge-mcp",
+            "prompt": huge_prompt
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mcp = ClaudeMemMcp::new(WorkerClient::new(format!("http://{addr}")));
+    let search = mcp
+        .search(Parameters(SearchParams {
+            query: Some("kiwifarms".into()),
+            project: Some("huge-mcp".into()),
+            limit: Some(20),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+    let text = result_text(&search);
+    assert!(text.contains("Found 1 result(s)"));
+    assert!(text.contains("#P"));
+    assert!(text.contains("searchable kiwifarms prompt"));
+    assert!(!text.contains("\"prompt_text\""));
+    assert!(!text.contains("oversized-prompt-tail"));
+    assert!(
+        text.len() < 5_000,
+        "MCP search returned oversized text: {} bytes",
+        text.len()
+    );
 
     server.abort();
 }

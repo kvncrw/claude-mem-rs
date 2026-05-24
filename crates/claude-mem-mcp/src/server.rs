@@ -129,10 +129,22 @@ impl ClaudeMemMcp {
         }
         insert_optional(&mut query, "project", params.project);
         insert_optional_number(&mut query, "limit", params.limit);
+        query
+            .entry("format".into())
+            .or_insert_with(|| "text".into());
         let data = self
             .worker
             .get_json("/api/search", query_pairs(query))
             .await?;
+        if let Some(text) = data
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+        {
+            return Ok(text_result(text));
+        }
         Ok(json_text_result(&data)?)
     }
 
