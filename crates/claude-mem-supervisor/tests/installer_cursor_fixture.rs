@@ -42,6 +42,18 @@ fn isolate_env(home: &std::path::Path) {
     std::env::remove_var("CLAUDE_MEM_HOME");
     std::env::remove_var("CLAUDE_MEM_DATA_DIR");
     std::env::remove_var("CLAUDE_MEM_WORKER_URL");
+    // `platform_paths::home_dir_with_env` on Windows resolves
+    // USERPROFILE → HOMEDRIVE+HOMEPATH → HOME (in that order).
+    // Setting only HOME above isn't enough — the windows-latest CI runner
+    // has USERPROFILE set, which wins and lands the install outside
+    // `home`. Pin all three windows-side knobs so the temp HOME wins on
+    // every platform regardless of the runner's ambient env.
+    #[cfg(windows)]
+    {
+        std::env::set_var("USERPROFILE", home);
+        std::env::remove_var("HOMEDRIVE");
+        std::env::remove_var("HOMEPATH");
+    }
 }
 
 fn install_cursor_only() {
