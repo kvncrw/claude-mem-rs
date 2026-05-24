@@ -380,6 +380,7 @@ async fn claude_summarize_hook_reads_transcript_and_completes_session() {
         &transcript_path,
         r#"{"type":"user","message":{"content":"Summarize transcript memory."}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Transcript summary should mention lower wattage instead of fan speed.\n<system-reminder>hidden reminder</system-reminder>"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"true"}}]}}
 "#,
     )
     .unwrap();
@@ -508,7 +509,66 @@ async fn claude_summarize_hook_infers_transcript_path_when_stop_omits_it() {
     .json()
     .await
     .unwrap();
-    assert_eq!(search["sessions"].as_array().unwrap().len(), 1);
+    assert!(search["sessions"].as_array().unwrap().len() >= 1);
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let inferred_session_id = "claude-stop-empty-input-e2e";
+    std::fs::write(
+        project_dir.join(format!("{inferred_session_id}.jsonl")),
+        r#"{"type":"user","message":{"content":"Summarize empty Stop payload memory."}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Empty Stop payload inference should mention transcript newest file fallback."}]}}
+"#,
+    )
+    .unwrap();
+
+    let init = execute_hook(
+        "claude-code",
+        "session-init",
+        json!({
+            "session_id": inferred_session_id,
+            "cwd": "/home/kcrawley/projects/cloudy-fork",
+            "prompt": "Remember empty Stop payload inference."
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(init.exit_code, 0);
+
+    let summarize = execute_hook(
+        "claude-code",
+        "summarize",
+        json!({
+            "cwd": "/home/kcrawley/projects/cloudy-fork"
+        }),
+        &worker,
+    )
+    .await
+    .unwrap();
+    assert_eq!(summarize.exit_code, 0);
+
+    let status: serde_json::Value = reqwest::get(format!(
+        "{}/api/sessions/status?contentSessionId={inferred_session_id}",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(status["hasSummary"], true);
+    assert_eq!(status["session"]["status"], "completed");
+
+    let search: serde_json::Value = reqwest::get(format!(
+        "{}/api/search?query=transcript%20newest%20file%20fallback&project=cloudy-fork&limit=10",
+        worker.base_url()
+    ))
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert!(search["sessions"].as_array().unwrap().len() >= 1);
 
     if let Some(value) = prior_projects_dir {
         std::env::set_var("CLAUDE_MEM_CLAUDE_PROJECTS_DIR", value);

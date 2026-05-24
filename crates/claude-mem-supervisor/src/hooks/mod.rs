@@ -189,13 +189,27 @@ fn normalize_raw_input(platform: &str, raw: Value) -> NormalizedHookInput {
             .and_then(Value::as_str)
             .map(str::to_owned)
     };
+    let cwd = field("cwd", "cwd").or_else(default_cwd);
+    let mut transcript_path = field("transcript_path", "transcriptPath");
+    let should_infer_claude_transcript = matches!(platform, "claude-code" | "claude");
+    if should_infer_claude_transcript && transcript_path.is_none() {
+        transcript_path =
+            latest_claude_transcript_for_cwd(cwd.as_deref()).map(|path| path.display().to_string());
+    }
+    let session_id = field("session_id", "sessionId")
+        .or_else(|| field("id", "id"))
+        .or_else(|| {
+            should_infer_claude_transcript
+                .then(|| {
+                    transcript_path
+                        .as_deref()
+                        .and_then(session_id_from_transcript_path)
+                })
+                .flatten()
+        });
     NormalizedHookInput {
-        session_id: field("session_id", "sessionId").or_else(|| field("id", "id")),
-        cwd: field("cwd", "cwd").or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.display().to_string())
-        }),
+        session_id,
+        cwd,
         prompt: field("prompt", "prompt"),
         tool_name: field("tool_name", "toolName"),
         tool_input: raw
@@ -206,7 +220,7 @@ fn normalize_raw_input(platform: &str, raw: Value) -> NormalizedHookInput {
             .get("tool_response")
             .or_else(|| raw.get("toolResponse"))
             .cloned(),
-        transcript_path: field("transcript_path", "transcriptPath"),
+        transcript_path,
         platform: platform.to_owned(),
     }
 }
@@ -503,6 +517,32 @@ fn transcript_candidates(input: &NormalizedHookInput) -> Vec<PathBuf> {
     paths
 }
 
+fn latest_claude_transcript_for_cwd(cwd: Option<&str>) -> Option<PathBuf> {
+    let cwd = cwd?;
+    let dir = claude_projects_dir().join(claude_project_dir_name(cwd));
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+fn session_id_from_transcript_path(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .map(str::to_owned)
+}
+
 fn claude_transcript_path(cwd: &str, session_id: &str) -> PathBuf {
     claude_projects_dir()
         .join(claude_project_dir_name(cwd))
@@ -680,6 +720,9 @@ fn extract_last_transcript_message(
         };
         if strip_system_reminders {
             text = strip_system_reminders_from_text(&text);
+        }
+        if text.trim().is_empty() {
+            continue;
         }
         return Ok(text);
     }
