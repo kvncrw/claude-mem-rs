@@ -863,6 +863,7 @@ fn current_binary_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("claude-mem"))
 }
 
+#[cfg_attr(windows, allow(unused_variables))]
 fn set_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {

@@ -47,6 +47,12 @@ mod tests {
         assert_eq!(project_name_from_cwd("/tmp/foo/"), "foo");
     }
 
+    // POSIX-only: `~`-only expansion resolves to `home_dir()`'s file_name(),
+    // which on Windows comes from `USERPROFILE` (inherited from the test
+    // process) and won't match `/home/me`. The `~/foo`-prefix test below is
+    // platform-robust because file_name() peels the trailing component
+    // regardless of what the home prefix is.
+    #[cfg(unix)]
     #[test]
     fn handles_tilde_only() {
         std::env::set_var("HOME", "/home/me");
