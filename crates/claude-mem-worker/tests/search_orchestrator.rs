@@ -51,7 +51,7 @@ fn searches_with_sqlite_strategy_and_formats_results() {
         &map([("query", "Dynatron"), ("project", "cloudy"), ("limit", "5")]),
     );
 
-    assert_eq!(result.used_chroma, false);
+    assert!(!result.used_chroma);
     assert_eq!(result.results.observations.len(), 1);
     assert_eq!(
         result.results.observations[0].title.as_deref(),
