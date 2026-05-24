@@ -45,8 +45,8 @@ fn searches_all_types_with_project_filter() {
         },
     );
 
-    assert_eq!(result.used_chroma, false);
-    assert_eq!(result.fell_back, false);
+    assert!(!result.used_chroma);
+    assert!(!result.fell_back);
     assert_eq!(result.strategy, SearchStrategyHint::Sqlite);
     assert_eq!(result.results.observations.len(), 2);
     assert_eq!(result.results.sessions.len(), 1);

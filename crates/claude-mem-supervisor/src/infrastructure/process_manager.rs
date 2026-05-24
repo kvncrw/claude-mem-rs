@@ -424,6 +424,22 @@ fn worker_daemon_args(executable_path: &Path) -> Vec<&'static str> {
     }
 }
 
+fn default_pid_path() -> PathBuf {
+    platform_paths::worker_pid_path()
+}
+
+fn parse_colon_triplet(value: &str) -> Option<(i64, i64, i64)> {
+    let parts: Vec<_> = value.split(':').collect();
+    match parts.as_slice() {
+        [hours, minutes, seconds] => Some((
+            hours.parse().ok()?,
+            minutes.parse().ok()?,
+            seconds.parse().ok()?,
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,21 +512,5 @@ mod tests {
     fn taskkill_kill_uses_force_and_tree() {
         let args = super::taskkill_args(1234, super::TaskkillMode::Kill);
         assert_eq!(args, vec!["/F", "/T", "/PID", "1234"]);
-    }
-}
-
-fn default_pid_path() -> PathBuf {
-    platform_paths::worker_pid_path()
-}
-
-fn parse_colon_triplet(value: &str) -> Option<(i64, i64, i64)> {
-    let parts: Vec<_> = value.split(':').collect();
-    match parts.as_slice() {
-        [hours, minutes, seconds] => Some((
-            hours.parse().ok()?,
-            minutes.parse().ok()?,
-            seconds.parse().ok()?,
-        )),
-        _ => None,
     }
 }

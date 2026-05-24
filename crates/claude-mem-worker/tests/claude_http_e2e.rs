@@ -8,11 +8,14 @@ use claude_mem_worker::agents::observer::{
 };
 use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tower::ServiceExt;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `tokio::sync::Mutex` so the env guard can be held across `.await` without
+// tripping `clippy::await_holding_lock`. The test body is fully async.
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 async fn json_request(
     app: axum::Router,
@@ -33,7 +36,7 @@ async fn json_request(
         .unwrap();
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let value = serde_json::from_slice(&body).unwrap_or_else(|_| json!(null));
+    let value = serde_json::from_slice(&body).unwrap_or_default();
     (status, value)
 }
 
@@ -240,7 +243,7 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
 
 #[tokio::test]
 async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     let home = tempfile::TempDir::new().unwrap();
     std::env::set_var("CLAUDE_MEM_HOME", home.path());
 

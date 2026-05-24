@@ -3,10 +3,14 @@ use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `tokio::sync::Mutex` so the guard can be held across `.await` without
+// tripping `clippy::await_holding_lock`. `std::sync::Mutex` was fine when
+// this test was single-pass, but it serialises around live HTTP work
+// against the in-process worker, every step of which is async.
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 async fn json_request(app: Router, method: Method, uri: &str, body: Value) -> (StatusCode, Value) {
     let response = app
@@ -31,7 +35,7 @@ async fn live_provider_smoke_when_enabled() {
         eprintln!("skipping live provider smoke; set CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1");
         return;
     }
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     let providers = live_providers();
     assert!(
         !providers.is_empty(),

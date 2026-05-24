@@ -130,32 +130,6 @@ pub fn expand_home_path(input: impl AsRef<str>) -> PathBuf {
     PathBuf::from(value)
 }
 
-#[cfg(test)]
-mod expand_home_path_tests {
-    use super::*;
-
-    #[test]
-    fn tilde_alone_returns_home() {
-        assert_eq!(expand_home_path("~"), home_dir());
-    }
-
-    #[test]
-    fn tilde_slash_expands_under_home() {
-        assert_eq!(expand_home_path("~/foo"), home_dir().join("foo"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn tilde_backslash_expands_under_home_on_windows() {
-        assert_eq!(expand_home_path(r"~\foo\bar"), home_dir().join(r"foo\bar"));
-    }
-
-    #[test]
-    fn non_tilde_passes_through() {
-        assert_eq!(expand_home_path("/etc/hosts"), PathBuf::from("/etc/hosts"));
-    }
-}
-
 pub fn load_config(path: &Path) -> Result<TranscriptWatchConfig> {
     let text = fs::read_to_string(path)?;
     let mut config: TranscriptWatchConfig = serde_json::from_str(&text)?;
@@ -366,4 +340,30 @@ fn match_in(path: &str, values: &[&str]) -> MatchRule {
 
 fn home_dir() -> PathBuf {
     claude_mem_core::shared::platform_paths::home_dir()
+}
+
+#[cfg(test)]
+mod expand_home_path_tests {
+    use super::*;
+
+    #[test]
+    fn tilde_alone_returns_home() {
+        assert_eq!(expand_home_path("~"), home_dir());
+    }
+
+    #[test]
+    fn tilde_slash_expands_under_home() {
+        assert_eq!(expand_home_path("~/foo"), home_dir().join("foo"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tilde_backslash_expands_under_home_on_windows() {
+        assert_eq!(expand_home_path(r"~\foo\bar"), home_dir().join(r"foo\bar"));
+    }
+
+    #[test]
+    fn non_tilde_passes_through() {
+        assert_eq!(expand_home_path("/etc/hosts"), PathBuf::from("/etc/hosts"));
+    }
 }

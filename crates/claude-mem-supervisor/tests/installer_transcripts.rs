@@ -5,11 +5,12 @@ use claude_mem_supervisor::transcripts::config::{sample_config, TranscriptWatchC
 use claude_mem_supervisor::transcripts::watcher::TranscriptWatcher;
 use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use serde_json::Value;
-use std::sync::Mutex;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// `tokio::sync::Mutex` so the env guard can sit across `.await` without
+// tripping `clippy::await_holding_lock`. The test body is fully async.
+static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 async fn spawn_worker() -> (WorkerClient, oneshot::Sender<()>) {
     let app: Router = build_router_with_state(AppState::in_memory().unwrap());
@@ -29,7 +30,9 @@ async fn spawn_worker() -> (WorkerClient, oneshot::Sender<()>) {
 
 #[test]
 fn installer_writes_posix_runtime_integration_files() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    // Sync test → `blocking_lock` on the tokio mutex. The async sibling
+    // uses `.await`. Both serialise on the same guard.
+    let _guard = ENV_LOCK.blocking_lock();
     let home = tempfile::TempDir::new().unwrap();
     let claude_dir = home.path().join(".claude");
     let cursor_mcp = home.path().join(".cursor/mcp.json");
@@ -177,7 +180,7 @@ fn installer_writes_posix_runtime_integration_files() {
 
 #[tokio::test]
 async fn transcript_watcher_processes_codex_jsonl_into_memory() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().await;
     let home = tempfile::TempDir::new().unwrap();
     std::env::set_var("HOME", home.path());
     let (worker, shutdown) = spawn_worker().await;
