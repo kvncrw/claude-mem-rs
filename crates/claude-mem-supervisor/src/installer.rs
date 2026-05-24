@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PLUGIN_ID: &str = "claude-mem@kvncrw";
+const PLUGIN_ID: &str = "claude-mem-rs@kvncrw";
 const MARKETPLACE_ID: &str = "kvncrw";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +246,7 @@ fn register_claude_plugin(
         )?;
         set_executable(&launcher)?;
         register_marketplace(version)?;
+        register_installed_plugin(version, &plugin_dir)?;
         enable_claude_settings()?;
     }
     actions.push(format!(
@@ -370,6 +371,25 @@ fn register_marketplace(version: &str) -> Result<()> {
         "autoUpdate": true,
         "version": version
     });
+    write_json_atomic(&path, &value)
+}
+
+fn register_installed_plugin(version: &str, plugin_dir: &Path) -> Result<()> {
+    let path = claude_plugins_dir().join("installed_plugins.json");
+    let mut value = read_json_or_empty(&path);
+    value["version"] = json!(2);
+    value["plugins"][PLUGIN_ID] = json!([{
+        "scope": "user",
+        "installPath": plugin_dir,
+        "version": version,
+        "installedAt": now_string(),
+        "lastUpdated": now_string(),
+        "gitCommitSha": std::env::var("CLAUDE_MEM_GIT_COMMIT")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "local".to_owned())
+    }]);
     write_json_atomic(&path, &value)
 }
 
