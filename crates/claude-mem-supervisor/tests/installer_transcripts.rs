@@ -35,16 +35,28 @@ fn installer_writes_posix_runtime_integration_files() {
     let cursor_mcp = home.path().join(".cursor/mcp.json");
     let gemini_settings = home.path().join(".gemini/settings.json");
     let codex_agents = home.path().join(".codex/AGENTS.md");
+    let opencode_config = home.path().join(".config/opencode/opencode.json");
+    let opencode_plugin = home
+        .path()
+        .join(".config/opencode/claude-mem-rs-plugin.mjs");
     let transcript_config = home.path().join(".claude-mem/transcript-watch.json");
     std::env::set_var("HOME", home.path());
     std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
     std::env::set_var("CURSOR_MCP_CONFIG", &cursor_mcp);
     std::env::set_var("GEMINI_SETTINGS_PATH", &gemini_settings);
     std::env::set_var("CODEX_AGENTS_PATH", &codex_agents);
+    std::env::set_var("OPENCODE_CONFIG_PATH", &opencode_config);
+    std::env::set_var("OPENCODE_PLUGIN_PATH", &opencode_plugin);
     std::env::set_var("CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH", &transcript_config);
+    std::fs::create_dir_all(gemini_settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &gemini_settings,
+        r#"{"hooks":{"Stop":[{"command":"old-invalid-hook"}]}}"#,
+    )
+    .unwrap();
 
     let report = run_install(InstallOptions {
-        ide: Some("claude-code,cursor,gemini-cli,codex-cli".into()),
+        ide: Some("claude-code,cursor,gemini-cli,codex-cli,opencode".into()),
         yes: true,
         dry_run: false,
         bin_path: Some("/usr/local/bin/claude-mem".into()),
@@ -61,6 +73,8 @@ fn installer_writes_posix_runtime_integration_files() {
     assert!(cursor_mcp.exists());
     assert!(gemini_settings.exists());
     assert!(codex_agents.exists());
+    assert!(opencode_config.exists());
+    assert!(opencode_plugin.exists());
     assert!(transcript_config.exists());
 
     let cursor: Value =
@@ -98,6 +112,30 @@ fn installer_writes_posix_runtime_integration_files() {
     );
     assert!(settings["mcpServers"].get("claude-mem-rs").is_none());
 
+    let gemini: Value =
+        serde_json::from_str(&std::fs::read_to_string(gemini_settings).unwrap()).unwrap();
+    assert_eq!(
+        gemini["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "\"/usr/local/bin/claude-mem\" hook gemini-cli context"
+    );
+    assert_eq!(
+        gemini["hooks"]["BeforeAgent"][0]["hooks"][0]["command"],
+        "\"/usr/local/bin/claude-mem\" hook gemini-cli session-init"
+    );
+    assert_eq!(
+        gemini["hooks"]["AfterTool"][0]["hooks"][0]["command"],
+        "\"/usr/local/bin/claude-mem\" hook gemini-cli observation"
+    );
+    assert_eq!(
+        gemini["hooks"]["AfterAgent"][0]["hooks"][0]["command"],
+        "\"/usr/local/bin/claude-mem\" hook gemini-cli summarize"
+    );
+    assert_eq!(
+        gemini["hooks"]["SessionEnd"][0]["hooks"][0]["command"],
+        "\"/usr/local/bin/claude-mem\" hook gemini-cli session-complete"
+    );
+    assert!(gemini["hooks"].get("Stop").is_none());
+
     let claude_state: Value =
         serde_json::from_str(&std::fs::read_to_string(home.path().join(".claude.json")).unwrap())
             .unwrap();
@@ -112,6 +150,29 @@ fn installer_writes_posix_runtime_integration_files() {
             .ends_with(".claude-mem")
     );
     assert!(claude_state["mcpServers"].get("claude-mem-rs").is_none());
+
+    let opencode: Value =
+        serde_json::from_str(&std::fs::read_to_string(opencode_config).unwrap()).unwrap();
+    assert_eq!(opencode["mcp"]["claude-mem"]["type"], "local");
+    assert_eq!(
+        opencode["mcp"]["claude-mem"]["command"][0],
+        "/usr/local/bin/claude-mem"
+    );
+    assert_eq!(opencode["mcp"]["claude-mem"]["command"][1], "mcp");
+    assert_eq!(
+        opencode["mcp"]["claude-mem"]["environment"]["CLAUDE_MEM_HOME"],
+        home.path().join(".claude-mem").display().to_string()
+    );
+    assert!(opencode["plugin"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry == opencode_plugin.to_str().unwrap()));
+
+    let plugin_text = std::fs::read_to_string(opencode_plugin).unwrap();
+    assert!(plugin_text.contains("experimental.chat.system.transform"));
+    assert!(plugin_text.contains("\"tool.execute.after\""));
+    assert!(plugin_text.contains("\"hook\", \"opencode\", event"));
 }
 
 #[tokio::test]

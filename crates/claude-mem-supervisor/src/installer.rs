@@ -79,6 +79,7 @@ pub fn run_uninstall(options: UninstallOptions) -> Result<InstallReport> {
     remove_file_if_exists(gemini_settings_path(), options.dry_run, &mut actions)?;
     remove_file_if_exists(cursor_mcp_path(), options.dry_run, &mut actions)?;
     remove_file_if_exists(codex_agents_path(), options.dry_run, &mut actions)?;
+    remove_file_if_exists(opencode_plugin_path(), options.dry_run, &mut actions)?;
     Ok(InstallReport {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         selected_ides: Vec::new(),
@@ -119,6 +120,13 @@ pub fn detect_ides() -> Vec<IdeInfo> {
             supported: true,
             hint: "transcript watcher + AGENTS.md",
         },
+        IdeInfo {
+            id: "opencode",
+            label: "opencode",
+            detected: home.join(".config/opencode").exists() || command_exists("opencode"),
+            supported: true,
+            hint: "MCP config + lifecycle plugin",
+        },
     ]
 }
 
@@ -151,6 +159,9 @@ fn install_ide(ide: &str, bin_path: &Path, dry_run: bool, actions: &mut Vec<Stri
         }
         "codex-cli" => {
             write_codex_agents(dry_run, actions)?;
+        }
+        "opencode" => {
+            write_opencode_config(bin_path, dry_run, actions)?;
         }
         other => return Err(anyhow!("unsupported IDE: {other}")),
     }
@@ -434,13 +445,54 @@ fn write_cursor_mcp(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -
 fn write_gemini_settings(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
     let path = gemini_settings_path();
     let mut config = read_json_or_empty(&path);
-    config["hooks"]["AfterAgent"] = json!([{
-        "command": bin_path.display().to_string(),
-        "args": ["hook", "gemini-cli", "observation"]
+    let command = |event: &str| format!("\"{}\" hook gemini-cli {event}", bin_path.display());
+    if let Some(hooks) = config.get_mut("hooks").and_then(Value::as_object_mut) {
+        hooks.remove("Stop");
+    }
+    config["hooks"]["SessionStart"] = json!([{
+        "matcher": "startup|resume|clear",
+        "hooks": [{
+            "name": "claude-mem-rs-context",
+            "type": "command",
+            "command": command("context"),
+            "timeout": 60000
+        }]
     }]);
-    config["hooks"]["Stop"] = json!([{
-        "command": bin_path.display().to_string(),
-        "args": ["hook", "gemini-cli", "summarize"]
+    config["hooks"]["BeforeAgent"] = json!([{
+        "matcher": "*",
+        "hooks": [{
+            "name": "claude-mem-rs-session-init",
+            "type": "command",
+            "command": command("session-init"),
+            "timeout": 60000
+        }]
+    }]);
+    config["hooks"]["AfterTool"] = json!([{
+        "matcher": "*",
+        "hooks": [{
+            "name": "claude-mem-rs-observation",
+            "type": "command",
+            "command": command("observation"),
+            "timeout": 120000
+        }]
+    }]);
+    config["hooks"]["AfterAgent"] = json!([{
+        "matcher": "*",
+        "hooks": [{
+            "name": "claude-mem-rs-summarize",
+            "type": "command",
+            "command": command("summarize"),
+            "timeout": 120000
+        }]
+    }]);
+    config["hooks"]["SessionEnd"] = json!([{
+        "matcher": "*",
+        "hooks": [{
+            "name": "claude-mem-rs-complete",
+            "type": "command",
+            "command": command("session-complete"),
+            "timeout": 30000
+        }]
     }]);
     if !dry_run {
         write_json_atomic(&path, &config)?;
@@ -459,6 +511,122 @@ fn write_codex_agents(dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
         fs::write(&path, content)?;
     }
     actions.push(format!("wrote Codex AGENTS hint {}", path.display()));
+    Ok(())
+}
+
+fn write_opencode_config(bin_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    let config_path = opencode_config_path();
+    let plugin_path = opencode_plugin_path();
+    let mut config = read_json_or_empty(&config_path);
+    config["mcp"]["claude-mem"] = json!({
+        "type": "local",
+        "command": [bin_path.display().to_string(), "mcp"],
+        "environment": worker_env_json(),
+        "enabled": true,
+        "timeout": 120000
+    });
+
+    let plugin_entry = Value::String(plugin_path.display().to_string());
+    let mut plugins = config
+        .get("plugin")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    plugins.retain(|entry| entry != &plugin_entry);
+    plugins.push(plugin_entry);
+    config["plugin"] = Value::Array(plugins);
+
+    if !dry_run {
+        write_opencode_plugin(bin_path, &plugin_path)?;
+        write_json_atomic(&config_path, &config)?;
+    }
+    actions.push(format!(
+        "configured opencode MCP/plugin {}",
+        config_path.display()
+    ));
+    Ok(())
+}
+
+fn write_opencode_plugin(bin_path: &Path, plugin_path: &Path) -> Result<()> {
+    if let Some(parent) = plugin_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bin = serde_json::to_string(&bin_path.display().to_string())?;
+    let env = serde_json::to_string(&worker_env_json())?;
+    fs::write(
+        plugin_path,
+        format!(
+            r#"import {{ spawnSync }} from "node:child_process";
+
+const BIN = {bin};
+const EXTRA_ENV = {env};
+
+function textFromParts(parts) {{
+  if (!Array.isArray(parts)) return "";
+  return parts.map((part) => {{
+    if (typeof part?.text === "string") return part.text;
+    if (typeof part?.content === "string") return part.content;
+    return "";
+  }}).filter(Boolean).join("\n\n").trim();
+}}
+
+function runHook(event, payload) {{
+  const result = spawnSync(BIN, ["hook", "opencode", event], {{
+    input: JSON.stringify(payload || {{}}),
+    encoding: "utf8",
+    timeout: 120000,
+    env: {{ ...process.env, ...EXTRA_ENV }},
+  }});
+  if (result.error || result.status !== 0 || !result.stdout) return null;
+  try {{
+    return JSON.parse(result.stdout);
+  }} catch {{
+    return null;
+  }}
+}}
+
+export const ClaudeMemRsPlugin = async (ctx) => ({{
+  "experimental.chat.system.transform": async (input, output) => {{
+    const response = runHook("context", {{
+      session_id: input.sessionID,
+      cwd: ctx.directory,
+    }});
+    const context = response?.systemMessage || response?.hookSpecificOutput?.additionalContext;
+    if (context) output.system.push(context);
+  }},
+  "chat.message": async (input, output) => {{
+    runHook("session-init", {{
+      session_id: input.sessionID,
+      cwd: ctx.directory,
+      prompt: textFromParts(output.parts) || output.message?.content || "",
+    }});
+  }},
+  "tool.execute.after": async (input, output) => {{
+    runHook("observation", {{
+      session_id: input.sessionID,
+      cwd: ctx.directory,
+      tool_name: input.tool,
+      tool_input: input.args,
+      tool_response: {{
+        title: output.title,
+        output: output.output,
+        metadata: output.metadata,
+      }},
+    }});
+  }},
+  "experimental.session.compacting": async (input, output) => {{
+    runHook("summarize", {{
+      session_id: input.sessionID,
+      cwd: ctx.directory,
+      prompt: [output.prompt, ...(output.context || [])].filter(Boolean).join("\n\n"),
+    }});
+  }},
+}});
+
+export default ClaudeMemRsPlugin;
+"#
+        ),
+    )?;
     Ok(())
 }
 
@@ -696,6 +864,18 @@ fn codex_agents_path() -> PathBuf {
     std::env::var_os("CODEX_AGENTS_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir().join(".codex/AGENTS.md"))
+}
+
+fn opencode_config_path() -> PathBuf {
+    std::env::var_os("OPENCODE_CONFIG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config/opencode/opencode.json"))
+}
+
+fn opencode_plugin_path() -> PathBuf {
+    std::env::var_os("OPENCODE_PLUGIN_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config/opencode/claude-mem-rs-plugin.mjs"))
 }
 
 fn transcript_config_path() -> PathBuf {
