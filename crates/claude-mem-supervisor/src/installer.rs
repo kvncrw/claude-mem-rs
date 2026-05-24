@@ -753,6 +753,18 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
     }
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, format!("{}\n", serde_json::to_string_pretty(value)?))?;
+    // `fs::rename` on Windows does NOT reliably replace an existing
+    // destination — second-run installs (or upgrades) would otherwise
+    // fail mid-rewrite of `settings.json` / `mcp.json` and leave
+    // integrations partially configured. Remove first; the brief race
+    // between `remove_file` and `rename` matches the TS installer's
+    // behaviour and is acceptable for a single-user install path.
+    #[cfg(windows)]
+    {
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+    }
     fs::rename(tmp, path)?;
     Ok(())
 }
@@ -1061,5 +1073,27 @@ mod tests {
         assert!(is_bun_executable_path(r"C:\Users\Me\.bun\bin\bun.cmd"));
         assert!(is_bun_executable_path(r"C:\Users\Me\.bun\bin\BUN.CMD"));
         assert!(!is_bun_executable_path(r"C:\Users\Me\.bun\bin\node.exe"));
+    }
+
+    #[test]
+    fn write_json_atomic_overwrites_existing_file() {
+        // Regression: second-run installs must replace `settings.json` /
+        // `mcp.json` etc. cleanly. `fs::rename` on Windows does not do
+        // this for a pre-existing destination — see PR #9 Codex review.
+        // The helper removes the destination on Windows before renaming.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        write_json_atomic(&path, &json!({"first": 1})).expect("first write");
+        assert!(path.exists(), "first write should land");
+        write_json_atomic(&path, &json!({"second": 2})).expect("overwrite");
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains("\"second\""),
+            "expected overwrite content, got: {body}"
+        );
+        assert!(
+            !body.contains("\"first\""),
+            "old content should be replaced, got: {body}"
+        );
     }
 }
