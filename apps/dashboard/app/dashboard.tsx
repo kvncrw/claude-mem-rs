@@ -3,6 +3,8 @@
 import {
   Activity,
   Box,
+  ChevronDown,
+  ChevronRight,
   Database,
   Download,
   FileText,
@@ -660,13 +662,17 @@ export default function Dashboard() {
         </section>
 
         <aside className="panel">
-          <Section title="Settings">
-            <button className="sectionToggle" onClick={() => setSettingsExpanded((value) => !value)}>
-              <Settings size={16} />
-              {settingsExpanded ? "Collapse" : "Expand"}
+          <section className="section">
+            <button
+              className="sectionHeader"
+              onClick={() => setSettingsExpanded((value) => !value)}
+              aria-expanded={settingsExpanded}
+            >
+              <span>Settings</span>
+              {settingsExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </button>
             {settingsExpanded ? (
-              <div className="grid">
+              <div className="sectionBody">
                 <div>
                   <p className="muted small">Metric window</p>
                   <div className="segmented">
@@ -693,9 +699,11 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : (
-              <p className="muted small">Metric window: {windowLabel}</p>
+              <div className="sectionBody compactBody">
+                <p className="muted small">Metric window: {windowLabel}</p>
+              </div>
             )}
-          </Section>
+          </section>
           <Section title="Context Preview">
             <select value={contextProject} onChange={(event) => setContextProject(event.target.value)}>
               <option value="">Choose project</option>

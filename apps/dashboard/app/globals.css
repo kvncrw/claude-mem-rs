@@ -220,11 +220,40 @@ main {
   text-transform: uppercase;
 }
 
+.sectionHeader {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  justify-content: space-between;
+  letter-spacing: 0.06em;
+  margin: 0;
+  min-height: 36px;
+  padding: 10px 12px;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.sectionHeader:hover {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text);
+}
+
 .sectionBody,
 .panelBody {
   display: grid;
   gap: 10px;
   padding: 12px;
+}
+
+.compactBody {
+  padding-bottom: 10px;
+  padding-top: 10px;
 }
 
 .stats {
@@ -322,11 +351,6 @@ main {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   font-weight: 700;
-}
-
-.sectionToggle {
-  justify-content: flex-start;
-  width: 100%;
 }
 
 .sideList,
