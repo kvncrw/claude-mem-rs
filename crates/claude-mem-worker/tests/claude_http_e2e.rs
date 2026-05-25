@@ -8,6 +8,7 @@ use claude_mem_worker::agents::observer::{
 };
 use claude_mem_worker::http::router::{build_router_with_state, AppState};
 use serde_json::{json, Value};
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
@@ -86,6 +87,14 @@ async fn delete_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, serde_json::from_slice(&body).unwrap())
+}
+
+fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+    if let Some(value) = value {
+        std::env::set_var(key, value);
+    } else {
+        std::env::remove_var(key);
+    }
 }
 
 #[tokio::test]
@@ -972,7 +981,7 @@ async fn observer_queue_marks_provider_failures_and_keeps_draining_session() {
         session_db_id,
         ObserverConfig {
             provider: "claude".into(),
-            model_id: None,
+            model_id: Some("sonnet".into()),
             tier_routing_enabled: true,
             simple_model: None,
             summary_model: None,
@@ -1004,6 +1013,110 @@ async fn observer_queue_marks_provider_failures_and_keeps_draining_session() {
     } else {
         std::env::remove_var("CLAUDE_MEM_CLAUDE_ARGS");
     }
+}
+
+#[tokio::test]
+async fn claude_provider_invocation_is_isolated_from_user_hooks_plugins_and_mcp() {
+    let _guard = ENV_LOCK.lock().await;
+    let prior_command = std::env::var_os("CLAUDE_MEM_CLAUDE_COMMAND");
+    let prior_args = std::env::var_os("CLAUDE_MEM_CLAUDE_ARGS");
+    let prior_home = std::env::var_os("CLAUDE_MEM_HOME");
+    let prior_args_out = std::env::var_os("CLAUDE_MEM_FAKE_ARGS_OUT");
+    let prior_cwd_out = std::env::var_os("CLAUDE_MEM_FAKE_CWD_OUT");
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let script = temp.path().join("fake-claude");
+    let args_out = temp.path().join("args.txt");
+    let cwd_out = temp.path().join("cwd.txt");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+pwd > "$CLAUDE_MEM_FAKE_CWD_OUT"
+printf '%s\n' "$@" > "$CLAUDE_MEM_FAKE_ARGS_OUT"
+printf '%s' '{"type":"result","session_id":"fake-memory-session","result":"<observation><type>discovery</type><title>Isolated Claude provider</title><facts><fact>fake claude runner processed observer work</fact></facts><narrative>Observer runner isolation was exercised through the Claude provider path.</narrative><concepts><concept>observer-isolation</concept></concepts></observation>"}'
+"#,
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).unwrap();
+
+    std::env::set_var("CLAUDE_MEM_CLAUDE_COMMAND", &script);
+    std::env::remove_var("CLAUDE_MEM_CLAUDE_ARGS");
+    std::env::set_var("CLAUDE_MEM_HOME", temp.path());
+    std::env::set_var("CLAUDE_MEM_FAKE_ARGS_OUT", &args_out);
+    std::env::set_var("CLAUDE_MEM_FAKE_CWD_OUT", &cwd_out);
+
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state.clone());
+    let (status, init) = json_request(
+        app,
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "claude-provider-isolation-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Queue provider isolation smoke."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let session_db_id = init["sessionDbId"].as_i64().unwrap();
+
+    {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, "claude-provider-isolation-e2e")
+            .unwrap()
+            .unwrap();
+        PendingMessageStore::default()
+            .enqueue(
+                &conn,
+                &EnqueueInput {
+                    session_db_id,
+                    content_session_id: session.content_session_id,
+                    message_type: "observation".into(),
+                    tool_name: Some("Read".into()),
+                    tool_response: Some(json!({ "content": "isolation smoke" })),
+                    created_at_epoch: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+
+    let stats = process_pending_for_session(
+        Arc::clone(&state.conn),
+        session_db_id,
+        ObserverConfig {
+            provider: "claude".into(),
+            model_id: Some("sonnet".into()),
+            tier_routing_enabled: true,
+            simple_model: None,
+            summary_model: None,
+            max_messages: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.messages_processed, 1);
+    assert_eq!(stats.observations_inserted, 1);
+
+    let args_text = std::fs::read_to_string(&args_out).unwrap();
+    assert!(args_text.contains("--setting-sources\nlocal"));
+    assert!(args_text.contains("--strict-mcp-config"));
+    assert!(args_text.contains("--mcp-config\n{\"mcpServers\":{}}"));
+    assert!(args_text.contains("--settings\n{\"hooks\":{}"));
+    assert!(args_text.contains("--model\nsonnet"));
+    assert_eq!(
+        std::fs::read_to_string(&cwd_out).unwrap().trim(),
+        temp.path().join("observer-sessions").to_string_lossy()
+    );
+
+    restore_env("CLAUDE_MEM_CLAUDE_COMMAND", prior_command);
+    restore_env("CLAUDE_MEM_CLAUDE_ARGS", prior_args);
+    restore_env("CLAUDE_MEM_HOME", prior_home);
+    restore_env("CLAUDE_MEM_FAKE_ARGS_OUT", prior_args_out);
+    restore_env("CLAUDE_MEM_FAKE_CWD_OUT", prior_cwd_out);
 }
 
 #[tokio::test]

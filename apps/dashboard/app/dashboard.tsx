@@ -58,6 +58,7 @@ type QueueState = {
     totalPending?: number;
     totalProcessing?: number;
     totalFailed?: number;
+    stuckCount?: number;
   };
   recentlyProcessed?: QueueMessage[];
   recentlyCompleted?: {
@@ -426,7 +427,7 @@ export default function Dashboard() {
               <Stat
                 label="backlog p/r/f"
                 value={`${queueTotals.totalPending || 0}/${queueTotals.totalProcessing || processing.processing || 0}/${queueTotals.totalFailed || 0}`}
-                tone={queueTotals.totalFailed ? "bad" : "ok"}
+                tone={queueTotals.stuckCount || queueTotals.totalFailed ? "bad" : "ok"}
               />
               <Stat
                 label="queue done 15m"
@@ -440,7 +441,13 @@ export default function Dashboard() {
               <Op label="MCP tools" value={doctor.mcpReady ? "ready" : "not ready"} tone={doctor.mcpReady ? "ok" : "bad"} />
               <Op
                 label="Queue model"
-                value={queueTotals.totalPending || queueTotals.totalProcessing || queueTotals.totalFailed ? "active backlog" : "caught up"}
+                value={
+                  queueTotals.stuckCount
+                    ? `${queueTotals.stuckCount} stuck`
+                    : queueTotals.totalPending || queueTotals.totalProcessing || queueTotals.totalFailed
+                      ? "active backlog"
+                      : "caught up"
+                }
               />
               <Op label="Search backend" value={doctor.qdrant?.enabled ? "qdrant" : "sqlite"} />
               <Op label="Qdrant build" value={doctor.qdrant?.compiled ? "compiled" : "not compiled"} />
@@ -486,7 +493,8 @@ export default function Dashboard() {
             </strong>
             <p className="muted small">
               pending {queueTotals.totalPending || 0}, processing {queueTotals.totalProcessing || 0}, failed{" "}
-              {queueTotals.totalFailed || 0}. Completed 15m: {queueRecent.processed || 0} processed, {queueRecent.failed || 0} failed.
+              {queueTotals.totalFailed || 0}, stuck {queueTotals.stuckCount || 0}. Completed 15m: {queueRecent.processed || 0} processed,{" "}
+              {queueRecent.failed || 0} failed.
             </p>
             <p className="muted small">
               Recent mix: {queueRecent.observations || 0} observations, {queueRecent.summaries || 0} summaries.

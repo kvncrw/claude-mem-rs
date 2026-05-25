@@ -1768,13 +1768,23 @@ fn pending_queue_response(
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("failed"))
         .count();
+    let stale_cutoff = now_timestamp().1 - 60_000;
+    let stuck_count = queue
+        .iter()
+        .filter(|row| row.get("status").and_then(Value::as_str) == Some("processing"))
+        .filter(|row| {
+            row.get("startedProcessingAtEpoch")
+                .and_then(Value::as_i64)
+                .is_some_and(|started| started < stale_cutoff)
+        })
+        .count();
     Ok(json!({
         "queue": {
             "messages": queue,
             "totalPending": total_pending,
             "totalProcessing": total_processing,
             "totalFailed": total_failed,
-            "stuckCount": 0
+            "stuckCount": stuck_count
         },
         "recentlyProcessed": recent,
         "recentlyCompleted": recent_totals,

@@ -12,6 +12,7 @@ use std::time::Duration;
 use claude_mem_core::db::pending_messages::PendingMessageStore;
 use claude_mem_core::db::prompts::get_prompt_number_from_user_prompts;
 use claude_mem_core::db::sessions::update_memory_session_id;
+use claude_mem_core::shared::platform_paths::claude_mem_home;
 use claude_mem_core::types::pending_message::PendingMessageRow;
 use claude_mem_core::types::session::SdkSessionRow;
 use claude_mem_sdk::{
@@ -449,13 +450,16 @@ impl AgentRunner {
         let args = std::env::var("CLAUDE_MEM_CLAUDE_ARGS").unwrap_or_else(|_| {
             "-p --output-format json --tools \"\" --permission-mode dontAsk".to_owned()
         });
-        let parsed_args = shell_words(&args);
+        let parsed_args = isolated_claude_args(shell_words(&args));
         let has_resume_arg = parsed_args
             .iter()
             .any(|arg| arg == "--resume" || arg == "-r" || arg.starts_with("--resume="));
         let has_output_format = parsed_args
             .iter()
             .any(|arg| arg == "--output-format" || arg.starts_with("--output-format="));
+        let has_model_arg = parsed_args
+            .iter()
+            .any(|arg| arg == "--model" || arg.starts_with("--model="));
         for arg in &parsed_args {
             cmd.arg(arg);
         }
@@ -467,11 +471,17 @@ impl AgentRunner {
                 cmd.arg("--resume").arg(memory_session_id);
             }
         }
-        if std::env::var("CLAUDE_MEM_CLAUDE_INCLUDE_MODEL_ARG").as_deref() == Ok("true") {
+        if std::env::var("CLAUDE_MEM_CLAUDE_INCLUDE_MODEL_ARG").as_deref() != Ok("false")
+            && !has_model_arg
+        {
             if let Some(model) = model_id.as_deref() {
                 cmd.arg("--model").arg(model);
             }
         }
+        if let Some(observer_dir) = observer_sessions_dir() {
+            cmd.current_dir(observer_dir);
+        }
+        cmd.env("CLAUDE_MEM_OBSERVER", "1");
         cmd.arg(prompt)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -962,19 +972,20 @@ fn parse_provider_text_and_session(raw: &str) -> Option<(String, Option<String>)
 }
 
 fn provider_text_from_value(value: &Value) -> Option<String> {
+    if let Value::Array(items) = value {
+        return items.iter().rev().find_map(provider_text_from_value);
+    }
     value
         .get("result")
         .or_else(|| value.get("response"))
         .or_else(|| value.get("text"))
         .or_else(|| value.get("content"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+        .and_then(text_from_content)
         .or_else(|| {
             value
                 .get("message")
                 .and_then(|message| message.get("content"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
+                .and_then(text_from_content)
         })
         .or_else(|| {
             value
@@ -983,18 +994,39 @@ fn provider_text_from_value(value: &Value) -> Option<String> {
                 .and_then(|choices| choices.first())
                 .and_then(|choice| choice.get("message"))
                 .and_then(|message| message.get("content"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
+                .and_then(text_from_content)
         })
 }
 
 fn find_session_id(value: &Value) -> Option<String> {
+    if let Value::Array(items) = value {
+        return items.iter().rev().find_map(find_session_id);
+    }
     value
         .get("session_id")
         .or_else(|| value.get("memorySessionId"))
         .or_else(|| value.get("sessionId"))
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+fn text_from_content(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    let Value::Array(items) = value else {
+        return None;
+    };
+    let text = items
+        .iter()
+        .filter_map(|item| {
+            item.get("text")
+                .and_then(Value::as_str)
+                .or_else(|| item.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }
 
 fn parse_stream_json(raw: &str) -> Option<String> {
@@ -1022,6 +1054,47 @@ fn parse_mixed_output_json(raw: &str) -> Option<Value> {
     raw.match_indices('{')
         .rev()
         .find_map(|(index, _)| serde_json::from_str::<Value>(&raw[index..]).ok())
+}
+
+fn isolated_claude_args(mut args: Vec<String>) -> Vec<String> {
+    if std::env::var("CLAUDE_MEM_CLAUDE_ISOLATE").as_deref() == Ok("false") {
+        return args;
+    }
+    if !has_cli_arg(&args, "--setting-sources") {
+        args.push("--setting-sources".to_owned());
+        args.push("local".to_owned());
+    }
+    if !has_cli_arg(&args, "--strict-mcp-config") {
+        args.push("--strict-mcp-config".to_owned());
+    }
+    if !has_cli_arg(&args, "--mcp-config") {
+        args.push("--mcp-config".to_owned());
+        args.push(r#"{"mcpServers":{}}"#.to_owned());
+    }
+    if !has_cli_arg(&args, "--settings") {
+        args.push("--settings".to_owned());
+        args.push(
+            r#"{"hooks":{},"permissions":{"allow":[],"deny":["Bash","Read","Write","Edit","Grep","Glob","WebFetch","WebSearch","Task","NotebookEdit","AskUserQuestion","TodoWrite"]}}"#
+                .to_owned(),
+        );
+    }
+    args
+}
+
+fn has_cli_arg(args: &[String], flag: &str) -> bool {
+    args.iter()
+        .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+}
+
+fn observer_sessions_dir() -> Option<std::path::PathBuf> {
+    let dir = claude_mem_home().join("observer-sessions");
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => Some(dir),
+        Err(error) => {
+            tracing::warn!(%error, path = %dir.display(), "failed to create observer sessions directory");
+            None
+        }
+    }
 }
 
 fn should_resume_claude(session: &SdkSessionRow, message: Option<&PendingMessageRow>) -> bool {
@@ -1196,6 +1269,13 @@ mod tests {
         .unwrap();
         assert_eq!(text, "<summary/>");
         assert!(session.is_none());
+
+        let (text, session) = parse_provider_text_and_session(
+            r#"[{"type":"system","session_id":"ignored"},{"type":"assistant","message":{"content":[{"type":"text","text":"<observation/>"}]},"session_id":"mem-1"},{"type":"result","result":"<summary/>","session_id":"mem-1"}]"#,
+        )
+        .unwrap();
+        assert_eq!(text, "<summary/>");
+        assert_eq!(session.as_deref(), Some("mem-1"));
     }
 
     #[test]
@@ -1212,6 +1292,23 @@ mod tests {
                 "dontAsk"
             ]
         );
+    }
+
+    #[test]
+    fn default_claude_args_are_isolated_from_user_hooks_plugins_and_mcp() {
+        let args = isolated_claude_args(shell_words(
+            r#"-p --output-format json --tools "" --permission-mode dontAsk"#,
+        ));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--setting-sources", "local"]));
+        assert!(args.iter().any(|arg| arg == "--strict-mcp-config"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--mcp-config", r#"{"mcpServers":{}}"#]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--settings" && pair[1].contains(r#""hooks":{}"#)));
     }
 
     #[test]
