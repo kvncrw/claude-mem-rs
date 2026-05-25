@@ -12,6 +12,7 @@
 //! `pending` before claiming, so a crashed worker leaves no stranded work.
 
 use rusqlite::{params, Connection, Result};
+use serde_json::Value;
 
 use crate::types::pending_message::PendingMessageRow;
 
@@ -63,8 +64,16 @@ impl PendingMessageStore {
     }
 
     pub fn enqueue(&self, conn: &Connection, input: &EnqueueInput) -> Result<i64> {
-        let tool_in = json_to_text(input.tool_input.as_ref())?;
-        let tool_resp = json_to_text(input.tool_response.as_ref())?;
+        let tool_in = json_to_text(input.tool_input.as_ref().map(redact_json_value).as_ref())?;
+        let tool_resp = json_to_text(input.tool_response.as_ref().map(redact_json_value).as_ref())?;
+        let last_user_message = input
+            .last_user_message
+            .as_ref()
+            .map(|value| redact_secrets(value));
+        let last_assistant_message = input
+            .last_assistant_message
+            .as_ref()
+            .map(|value| redact_secrets(value));
         conn.execute(
             "INSERT INTO pending_messages
              (session_db_id, content_session_id, message_type, tool_name,
@@ -81,8 +90,8 @@ impl PendingMessageStore {
                 tool_in,
                 tool_resp,
                 input.cwd,
-                input.last_user_message,
-                input.last_assistant_message,
+                last_user_message,
+                last_assistant_message,
                 input.prompt_number,
                 input.created_at_epoch,
                 input.agent_type,
@@ -145,6 +154,31 @@ impl PendingMessageStore {
         get_by_id(conn, id)
     }
 
+    /// Claim one specific pending message by id. This is used by hook-facing
+    /// routes so a fresh hook event is not blocked behind old session backlog.
+    pub fn claim_message_by_id(
+        &self,
+        conn: &Connection,
+        id: i64,
+    ) -> Result<Option<PendingMessageRow>> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let changed = conn.execute(
+            "UPDATE pending_messages
+                SET status = 'processing', started_processing_at_epoch = ?1
+              WHERE id = ?2 AND status = 'pending'",
+            params![now_ms, id],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+
+        get_by_id(conn, id)
+    }
+
     /// Mark message as successfully processed; deletes the row.
     pub fn confirm_processed(&self, conn: &Connection, id: i64) -> Result<()> {
         conn.execute("DELETE FROM pending_messages WHERE id = ?1", params![id])?;
@@ -194,6 +228,70 @@ impl PendingMessageStore {
             Ok(MarkFailedOutcome::Retried(retry_count + 1))
         }
     }
+}
+
+fn redact_json_value(value: &Value) -> Value {
+    match value {
+        Value::String(value) => Value::String(redact_secrets(value)),
+        Value::Array(values) => Value::Array(values.iter().map(redact_json_value).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    if key_is_secret(key) {
+                        (key.clone(), Value::String("[REDACTED]".to_owned()))
+                    } else {
+                        (key.clone(), redact_json_value(value))
+                    }
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn key_is_secret(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("token")
+        || lower.contains("secret")
+        || lower.contains("password")
+        || lower == "authorization"
+}
+
+fn redact_secrets(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|part| {
+            if looks_like_secret(part) {
+                redact_secret_part(part)
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn looks_like_secret(part: &str) -> bool {
+    let trimmed =
+        part.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_');
+    trimmed.starts_with("sk-")
+        || trimmed.starts_with("sk_")
+        || trimmed.starts_with("sk-or-")
+        || trimmed.starts_with("ghp_")
+        || trimmed.starts_with("github_pat_")
+}
+
+fn redact_secret_part(part: &str) -> String {
+    let start = part
+        .find(|ch: char| ch.is_ascii_alphanumeric())
+        .unwrap_or(0);
+    let end = part
+        .rfind(|ch: char| ch.is_ascii_alphanumeric())
+        .map(|idx| idx + 1)
+        .unwrap_or(part.len());
+    format!("{}[REDACTED]{}", &part[..start], &part[end..])
 }
 
 /// Outcome of [`PendingMessageStore::mark_failed`].

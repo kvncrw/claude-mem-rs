@@ -33,7 +33,7 @@ use include_dir::{include_dir, Dir};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::process::Command;
@@ -44,7 +44,7 @@ use tokio_stream::StreamExt;
 
 use super::router::{default_db_path, AppState};
 use crate::agents::observer::{
-    process_all_pending, process_pending_for_session, process_session_init, ObserverConfig,
+    process_all_pending, process_pending_message, process_session_init, ObserverConfig,
     QueueProcessStats,
 };
 use crate::agents::response_processor::parse_summary;
@@ -419,6 +419,11 @@ pub async fn sessions_observations(
             json!({ "success": true, "skipped": true, "reason": "missing_tool_name" }),
         ));
     };
+    if should_skip_tool(tool_name) {
+        return Ok(Json(
+            json!({ "success": true, "skipped": true, "reason": "skip_tool" }),
+        ));
+    }
     let (message_id, session_db_id) = {
         let conn = state.conn.lock().unwrap();
         let session = match get_session_by_content_id(&conn, &req.content_session_id)
@@ -471,9 +476,10 @@ pub async fn sessions_observations(
         (message_id, session.id)
     };
 
-    let stats = match process_pending_for_session(
+    let stats = match process_pending_message(
         Arc::clone(&state.conn),
         session_db_id,
+        message_id,
         ObserverConfig::from_env(),
     )
     .await
@@ -523,6 +529,22 @@ fn project_from_path(path: &str) -> String {
         .to_owned()
 }
 
+fn should_skip_tool(tool_name: &str) -> bool {
+    configured_skip_tools()
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(tool_name.trim()))
+}
+
+fn configured_skip_tools() -> Vec<String> {
+    std::env::var("CLAUDE_MEM_SKIP_TOOLS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn observer_stats_json(stats: &QueueProcessStats) -> Value {
     json!({
         "totalPendingSessions": stats.total_pending_sessions,
@@ -550,12 +572,18 @@ pub async fn sessions_complete(
     Json(req): Json<SessionCompleteRequest>,
 ) -> ApiResult<Value> {
     let mut summary_id = None;
+    let mut summary_status = "skipped_no_memory_session";
     let completed = {
         let conn = state.conn.lock().unwrap();
         let Some(session) = get_session_by_content_id(&conn, &req.content_session_id)
             .map_err(ApiError::internal)?
         else {
-            return Ok(Json(json!({ "success": true, "completed": false })));
+            return Ok(Json(json!({
+                "success": true,
+                "completed": false,
+                "summaryId": null,
+                "summaryStatus": "session_missing"
+            })));
         };
         mark_session_completed(&conn, session.id).map_err(ApiError::internal)?;
         if let Some(memory_session_id) = session.memory_session_id.as_deref() {
@@ -567,6 +595,9 @@ pub async fn sessions_complete(
                     &req.content_session_id,
                     None,
                 )?);
+                summary_status = "created";
+            } else {
+                summary_status = "already_exists";
             }
         }
         true
@@ -579,13 +610,15 @@ pub async fn sessions_complete(
         json!({
             "contentSessionId": req.content_session_id,
             "completed": completed,
-            "summaryId": summary_id
+            "summaryId": summary_id,
+            "summaryStatus": summary_status
         }),
     );
     Ok(Json(json!({
         "success": true,
         "completed": completed,
-        "summaryId": summary_id
+        "summaryId": summary_id,
+        "summaryStatus": summary_status
     })))
 }
 
@@ -669,9 +702,10 @@ pub async fn sessions_summarize(
         (id, session.id)
     };
 
-    let stats = match process_pending_for_session(
+    let stats = match process_pending_message(
         Arc::clone(&state.conn),
         session_db_id,
+        message_id,
         ObserverConfig::from_env(),
     )
     .await
@@ -809,9 +843,10 @@ pub async fn session_legacy_observations(
             )
             .map_err(ApiError::internal)?
     };
-    let stats = process_pending_for_session(
+    let stats = process_pending_message(
         Arc::clone(&state.conn),
         session_db_id,
+        id,
         ObserverConfig::from_env(),
     )
     .await
@@ -864,9 +899,10 @@ pub async fn session_legacy_summarize(
             )
             .map_err(ApiError::internal)?
     };
-    let stats = process_pending_for_session(
+    let stats = process_pending_message(
         Arc::clone(&state.conn),
         session_db_id,
+        id,
         ObserverConfig::from_env(),
     )
     .await
@@ -1686,6 +1722,35 @@ pub async fn pending_queue_failed_get(State(state): State<AppState>) -> ApiResul
 }
 
 fn pending_queue_response(queue: Vec<Value>) -> Value {
+    let mut sessions: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
+    for row in &queue {
+        let Some(content_session_id) = row
+            .get("contentSessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let entry = sessions.entry(content_session_id).or_default();
+        match row.get("status").and_then(Value::as_str) {
+            Some("pending") => entry.0 += 1,
+            Some("processing") => entry.1 += 1,
+            Some("failed") => entry.2 += 1,
+            _ => {}
+        }
+    }
+    let sessions_with_pending_work = sessions
+        .into_iter()
+        .map(|(content_session_id, (pending, processing, failed))| {
+            json!({
+                "contentSessionId": content_session_id,
+                "pending": pending,
+                "processing": processing,
+                "failed": failed,
+                "total": pending + processing + failed
+            })
+        })
+        .collect::<Vec<_>>();
     let total_pending = queue
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("pending"))
@@ -1707,7 +1772,7 @@ fn pending_queue_response(queue: Vec<Value>) -> Value {
             "stuckCount": 0
         },
         "recentlyProcessed": [],
-        "sessionsWithPendingWork": []
+        "sessionsWithPendingWork": sessions_with_pending_work
     })
 }
 

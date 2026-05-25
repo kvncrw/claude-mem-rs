@@ -98,6 +98,30 @@ fn prompt_number_returns_count_of_prompts_for_session() {
 }
 
 #[test]
+fn save_updates_session_prompt_counter() {
+    let conn = open_in_memory().unwrap();
+    let content = create_session(&conn, "prompt-counter-session");
+
+    save_user_prompt(&conn, &prompt_input(&content, 1, "First prompt")).unwrap();
+    let session = sessions::get_session_by_content_id(&conn, &content)
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.prompt_counter, 1);
+
+    save_user_prompt(&conn, &prompt_input(&content, 3, "Third prompt")).unwrap();
+    let session = sessions::get_session_by_content_id(&conn, &content)
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.prompt_counter, 3);
+
+    save_user_prompt(&conn, &prompt_input(&content, 2, "Late second prompt")).unwrap();
+    let session = sessions::get_session_by_content_id(&conn, &content)
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.prompt_counter, 3);
+}
+
+#[test]
 fn prompt_number_maintains_session_isolation() {
     let conn = open_in_memory().unwrap();
     let sa = create_session(&conn, "isolation-session-a");

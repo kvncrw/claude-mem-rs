@@ -29,7 +29,14 @@ pub fn save_user_prompt(conn: &Connection, input: &PromptInput) -> Result<i64> {
             input.created_at_epoch,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE sdk_sessions
+            SET prompt_counter = MAX(COALESCE(prompt_counter, 0), ?1)
+          WHERE content_session_id = ?2",
+        params![input.prompt_number, input.content_session_id],
+    )?;
+    Ok(id)
 }
 
 fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserPromptRow> {

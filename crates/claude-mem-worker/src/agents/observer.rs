@@ -172,74 +172,154 @@ pub async fn process_pending_for_session(
             (session, message, model_id)
         };
 
-        let prompt = build_prompt_for_message(&session, &message);
-        let mut active_session = active_session_from_row(&session);
-        active_session.last_prompt_number = message.prompt_number.or_else(|| {
-            latest_prompt_number(&conn, &session.content_session_id)
-                .ok()
-                .flatten()
-        });
-        active_session.processing_message_ids.push(message.id);
-        active_session
-            .conversation_history
-            .push(ConversationMessage {
-                role: "user".to_owned(),
-                content: prompt.clone(),
-            });
-
-        let runner = AgentRunner::new(config.provider.clone());
-        let agent_result = runner
-            .run(&prompt, &session, Some(&message), model_id.clone())
-            .await;
-        let output = match agent_result {
-            Ok(output) => output,
-            Err(error) if should_try_claude_fallback(&config, &error) => {
-                AgentRunner::new("claude".to_owned())
-                    .run(&prompt, &session, Some(&message), model_id.clone())
-                    .await?
-            }
-            Err(error) => {
-                let conn = conn.lock().unwrap();
-                let _ = pending_store.mark_failed(&conn, message.id)?;
-                stats.messages_failed += 1;
-                return Err(error);
-            }
-        };
-
-        {
-            let conn = conn.lock().unwrap();
-            ensure_memory_session_id(
-                &conn,
-                &mut active_session,
-                output.memory_session_id.as_deref(),
-                &output.provider,
-            )?;
-            let processed_response = process_agent_response(
-                &conn,
-                &output.text,
-                &mut active_session,
-                &pending_store,
-                None,
-                ProcessAgentResponseOptions {
-                    original_timestamp: Some(message.created_at_epoch),
-                    agent_name: output.provider,
-                    model_id: output.model_id,
-                    ..Default::default()
-                },
-            )?;
-            stats.messages_processed += 1;
-            stats.observations_inserted += processed_response.storage.inserted as usize;
-            stats.summaries_inserted += usize::from(processed_response.summary.is_some());
-            push_unique_observation_ids(
-                &mut stats.observation_ids,
-                processed_response.storage.observation_ids,
-            );
-        }
-
+        process_claimed_message(
+            &conn,
+            &config,
+            &pending_store,
+            session,
+            message,
+            model_id,
+            &mut stats,
+        )
+        .await?;
         processed += 1;
     }
 
     Ok(stats)
+}
+
+pub async fn process_pending_message(
+    conn: Arc<Mutex<Connection>>,
+    session_db_id: i64,
+    message_id: i64,
+    config: ObserverConfig,
+) -> Result<QueueProcessStats, ObserverError> {
+    let mut stats = QueueProcessStats {
+        sessions_started: 1,
+        started_session_ids: vec![session_db_id],
+        ..Default::default()
+    };
+    let pending_store = PendingMessageStore::default();
+    let Some((session, message, model_id)) = ({
+        let conn = conn.lock().unwrap();
+        let Some(session) = get_session_by_id_locked(&conn, session_db_id)? else {
+            stats.sessions_skipped += 1;
+            return Ok(stats);
+        };
+        let model_id = choose_model_for_pending(&conn, session_db_id, &config)?;
+        let Some(message) = pending_store.claim_message_by_id(&conn, message_id)? else {
+            return Ok(stats);
+        };
+        Some((session, message, model_id))
+    }) else {
+        return Ok(stats);
+    };
+    process_claimed_message(
+        &conn,
+        &config,
+        &pending_store,
+        session,
+        message,
+        model_id,
+        &mut stats,
+    )
+    .await?;
+    Ok(stats)
+}
+
+async fn process_claimed_message(
+    conn: &Arc<Mutex<Connection>>,
+    config: &ObserverConfig,
+    pending_store: &PendingMessageStore,
+    session: SdkSessionRow,
+    message: PendingMessageRow,
+    model_id: Option<String>,
+    stats: &mut QueueProcessStats,
+) -> Result<(), ObserverError> {
+    let prompt = build_prompt_for_message(&session, &message);
+    let mut active_session = active_session_from_row(&session);
+    active_session.last_prompt_number = message.prompt_number.or_else(|| {
+        latest_prompt_number(conn, &session.content_session_id)
+            .ok()
+            .flatten()
+    });
+    active_session.processing_message_ids.push(message.id);
+    active_session
+        .conversation_history
+        .push(ConversationMessage {
+            role: "user".to_owned(),
+            content: prompt.clone(),
+        });
+
+    let runner = AgentRunner::new(config.provider.clone());
+    let agent_result = runner
+        .run(&prompt, &session, Some(&message), model_id.clone())
+        .await;
+    let output = match agent_result {
+        Ok(output) => output,
+        Err(error) if should_try_claude_fallback(config, &error) => {
+            match AgentRunner::new("claude".to_owned())
+                .run(&prompt, &session, Some(&message), model_id.clone())
+                .await
+            {
+                Ok(output) => output,
+                Err(fallback_error) => {
+                    let conn = conn.lock().unwrap();
+                    let _ = pending_store.mark_failed(&conn, message.id)?;
+                    stats.messages_failed += 1;
+                    tracing::warn!(
+                        %error,
+                        %fallback_error,
+                        message_id = message.id,
+                        "observer provider and fallback failed; marked message failed"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        Err(error) => {
+            let conn = conn.lock().unwrap();
+            let _ = pending_store.mark_failed(&conn, message.id)?;
+            stats.messages_failed += 1;
+            tracing::warn!(
+                %error,
+                message_id = message.id,
+                "observer provider failed; marked message failed"
+            );
+            return Ok(());
+        }
+    };
+
+    {
+        let conn = conn.lock().unwrap();
+        ensure_memory_session_id(
+            &conn,
+            &mut active_session,
+            output.memory_session_id.as_deref(),
+            &output.provider,
+        )?;
+        let processed_response = process_agent_response(
+            &conn,
+            &output.text,
+            &mut active_session,
+            pending_store,
+            None,
+            ProcessAgentResponseOptions {
+                original_timestamp: Some(message.created_at_epoch),
+                agent_name: output.provider,
+                model_id: output.model_id,
+                ..Default::default()
+            },
+        )?;
+        stats.messages_processed += 1;
+        stats.observations_inserted += processed_response.storage.inserted as usize;
+        stats.summaries_inserted += usize::from(processed_response.summary.is_some());
+        push_unique_observation_ids(
+            &mut stats.observation_ids,
+            processed_response.storage.observation_ids,
+        );
+    }
+    Ok(())
 }
 
 pub async fn process_session_init(

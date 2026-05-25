@@ -234,11 +234,56 @@ async fn claude_hook_facing_http_routes_create_and_recall_memory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(complete["completed"], true);
+    assert_eq!(complete["summaryStatus"], "created");
+    assert!(complete["summaryId"].as_i64().unwrap() > 0);
+
+    let (status, summaries) = get_json(app.clone(), "/api/summaries?project=cloudy-fork").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summaries["count"], 1);
+    assert!(summaries["summaries"][0]["completed"]
+        .as_str()
+        .unwrap()
+        .contains("Captured 1 observation"));
 
     let (status, shutdown) =
         json_request(app, Method::POST, "/api/admin/shutdown", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(shutdown["success"], true);
+}
+
+#[tokio::test]
+async fn session_complete_without_memory_session_is_explicitly_summary_skipped() {
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state);
+
+    let (status, _) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "complete-no-memory-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Complete a session before observer memory exists."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, complete) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/complete",
+        json!({ "contentSessionId": "complete-no-memory-e2e", "platformSource": "claude" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(complete["completed"], true);
+    assert_eq!(complete["summaryStatus"], "skipped_no_memory_session");
+    assert!(complete["summaryId"].is_null());
+
+    let (status, summaries) = get_json(app, "/api/summaries?project=cloudy-fork").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summaries["count"], 0);
 }
 
 #[tokio::test]
@@ -429,6 +474,55 @@ async fn viewer_admin_import_export_settings_logs_and_summary_routes_work() {
     assert_eq!(imported_stats["observations"], 1);
 
     std::env::remove_var("CLAUDE_MEM_HOME");
+}
+
+#[tokio::test]
+async fn observation_route_respects_configured_skip_tools() {
+    let _guard = ENV_LOCK.lock().await;
+    let prior = std::env::var_os("CLAUDE_MEM_SKIP_TOOLS");
+    std::env::set_var("CLAUDE_MEM_SKIP_TOOLS", "TodoWrite,AskUserQuestion");
+
+    let app = build_router_with_state(AppState::in_memory().unwrap());
+    let (status, init) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "skip-tool-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Skip tool observation."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(init["sessionDbId"].as_i64().unwrap() > 0);
+
+    let (status, skipped) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/observations",
+        json!({
+            "contentSessionId": "skip-tool-e2e",
+            "toolName": "AskUserQuestion",
+            "toolInput": { "question": "skip me" },
+            "toolResponse": { "answer": "yes" }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(skipped["success"], true);
+    assert_eq!(skipped["skipped"], true);
+    assert_eq!(skipped["reason"], "skip_tool");
+
+    let (status, pending) = get_json(app, "/api/pending-queue").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pending["queue"]["totalPending"], 0);
+
+    if let Some(value) = prior {
+        std::env::set_var("CLAUDE_MEM_SKIP_TOOLS", value);
+    } else {
+        std::env::remove_var("CLAUDE_MEM_SKIP_TOOLS");
+    }
 }
 
 #[tokio::test]
@@ -633,6 +727,13 @@ async fn v12_compatibility_routes_are_available() {
     assert_eq!(queue["queue"]["totalPending"], 1);
     assert_eq!(queue["queue"]["totalFailed"], 1);
     assert_eq!(queue["queue"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        queue["sessionsWithPendingWork"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(queue["sessionsWithPendingWork"][0]["pending"], 1);
+    assert_eq!(queue["sessionsWithPendingWork"][0]["failed"], 1);
+    assert_eq!(queue["sessionsWithPendingWork"][0]["total"], 2);
 
     let (status, all) = get_json(app.clone(), "/api/pending-queue/all").await;
     assert_eq!(status, StatusCode::OK);
@@ -799,6 +900,94 @@ async fn fake_agent_runner_processes_queued_observation_xml() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(search["observations"][0]["title"], "Fake observer response");
+}
+
+#[tokio::test]
+async fn observer_queue_marks_provider_failures_and_keeps_draining_session() {
+    let _guard = ENV_LOCK.lock().await;
+    let prior_command = std::env::var_os("CLAUDE_MEM_CLAUDE_COMMAND");
+    let prior_args = std::env::var_os("CLAUDE_MEM_CLAUDE_ARGS");
+    std::env::set_var("CLAUDE_MEM_CLAUDE_COMMAND", "/bin/false");
+    std::env::set_var("CLAUDE_MEM_CLAUDE_ARGS", "");
+
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state.clone());
+
+    let (status, init) = json_request(
+        app,
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "provider-failure-drain-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Queue provider failure smoke."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let session_db_id = init["sessionDbId"].as_i64().unwrap();
+
+    {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, "provider-failure-drain-e2e")
+            .unwrap()
+            .unwrap();
+        let pending_store = PendingMessageStore::default();
+        for i in 1..=2 {
+            pending_store
+                .enqueue(
+                    &conn,
+                    &EnqueueInput {
+                        session_db_id,
+                        content_session_id: session.content_session_id.clone(),
+                        message_type: "observation".into(),
+                        tool_name: Some("Read".into()),
+                        tool_response: Some(json!({ "content": format!("failure {i}") })),
+                        created_at_epoch: i,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    let stats = process_pending_for_session(
+        Arc::clone(&state.conn),
+        session_db_id,
+        ObserverConfig {
+            provider: "claude".into(),
+            model_id: None,
+            tier_routing_enabled: true,
+            simple_model: None,
+            summary_model: None,
+            max_messages: 10,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.messages_processed, 0);
+    assert_eq!(stats.messages_failed, 6);
+
+    let conn = state.conn.lock().unwrap();
+    let failed_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pending_messages WHERE session_db_id = ?1 AND status = 'failed'",
+            [session_db_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(failed_count, 2);
+
+    if let Some(value) = prior_command {
+        std::env::set_var("CLAUDE_MEM_CLAUDE_COMMAND", value);
+    } else {
+        std::env::remove_var("CLAUDE_MEM_CLAUDE_COMMAND");
+    }
+    if let Some(value) = prior_args {
+        std::env::set_var("CLAUDE_MEM_CLAUDE_ARGS", value);
+    } else {
+        std::env::remove_var("CLAUDE_MEM_CLAUDE_ARGS");
+    }
 }
 
 #[tokio::test]

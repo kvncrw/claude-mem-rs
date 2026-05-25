@@ -133,6 +133,37 @@ fn actively_processing_messages_are_not_recovered() {
 }
 
 #[test]
+fn claim_message_by_id_claims_only_the_target_pending_row() {
+    let conn = open_in_memory().unwrap();
+    let store = PendingMessageStore::new(3);
+    let db_id = create_session(&conn, CONTENT);
+
+    let first = enqueue_msg(&store, &conn, db_id);
+    let second = enqueue_msg(&store, &conn, db_id);
+
+    let claimed = store.claim_message_by_id(&conn, second).unwrap().unwrap();
+    assert_eq!(claimed.id, second);
+
+    let first_status: String = conn
+        .query_row(
+            "SELECT status FROM pending_messages WHERE id = ?",
+            [first],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let second_status: String = conn
+        .query_row(
+            "SELECT status FROM pending_messages WHERE id = ?",
+            [second],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(first_status, "pending");
+    assert_eq!(second_status, "processing");
+    assert!(store.claim_message_by_id(&conn, second).unwrap().is_none());
+}
+
+#[test]
 fn recovery_and_claim_is_atomic_within_single_call() {
     let conn = open_in_memory().unwrap();
     let store = PendingMessageStore::new(3);
@@ -235,4 +266,47 @@ fn self_healing_is_scoped_to_specified_session() {
         )
         .unwrap();
     assert_eq!(s1_status, "processing");
+}
+
+#[test]
+fn enqueue_redacts_secret_values_before_persisting_payloads() {
+    let conn = open_in_memory().unwrap();
+    let store = PendingMessageStore::new(3);
+    let db_id = create_session(&conn, CONTENT);
+    let secret = "sk-or-v1-super-secret-token";
+
+    let id = store
+        .enqueue(
+            &conn,
+            &EnqueueInput {
+                session_db_id: db_id,
+                content_session_id: CONTENT.into(),
+                message_type: "summarize".into(),
+                tool_name: Some("Bash".into()),
+                tool_input: Some(serde_json::json!({
+                    "api_key": secret,
+                    "command": format!("echo {secret}")
+                })),
+                tool_response: Some(serde_json::json!({
+                    "stdout": format!("token {secret}")
+                })),
+                last_user_message: Some(format!("user {secret}")),
+                last_assistant_message: Some(format!("assistant {secret}")),
+                created_at_epoch: now_ms(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let persisted: String = conn
+        .query_row(
+            "SELECT coalesce(tool_input,'') || coalesce(tool_response,'') ||
+                    coalesce(last_user_message,'') || coalesce(last_assistant_message,'')
+               FROM pending_messages WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!persisted.contains(secret));
+    assert!(persisted.contains("[REDACTED]"));
 }
