@@ -745,15 +745,21 @@ async fn v12_compatibility_routes_are_available() {
     assert_eq!(queue["sessionsWithPendingWork"][0]["total"], 2);
     assert_eq!(queue["recentlyCompleted"]["failed"], 1);
     assert_eq!(queue["recentlyCompleted"]["processed"], 1);
+    assert_eq!(queue["recentlyCompleted"]["window"], "15m");
+    assert!(queue["activityWindow"]["prompts"].as_i64().unwrap() >= 1);
+    assert!(queue["tokenMetrics"]["inputTokens"].as_i64().unwrap() >= 1);
+    assert!(queue["tokenMetrics"]["estimatedCostUsd"].as_f64().unwrap() >= 0.0);
     assert_eq!(
         queue["recentlyProcessed"][0]["status"].as_str().unwrap(),
         "failed"
     );
 
-    let (status, all) = get_json(app.clone(), "/api/pending-queue/all").await;
+    let (status, all) = get_json(app.clone(), "/api/pending-queue/all?window=all").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(all["queue"]["totalPending"], 1);
     assert_eq!(all["queue"]["totalFailed"], 1);
+    assert_eq!(all["recentlyCompleted"]["window"], "all");
+    assert!(all["tokenMetrics"]["totalTokens"].as_i64().unwrap() >= 1);
 
     let (status, failed) = get_json(app.clone(), "/api/pending-queue/failed").await;
     assert_eq!(status, StatusCode::OK);

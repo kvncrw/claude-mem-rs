@@ -299,6 +299,36 @@ main {
   grid-template-columns: 1fr 1fr;
 }
 
+.segmented {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  overflow: hidden;
+}
+
+.segmented button {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  min-height: 32px;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--line);
+}
+
+.segmented button.active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sectionToggle {
+  justify-content: flex-start;
+  width: 100%;
+}
+
 .sideList,
 .eventList {
   display: grid;

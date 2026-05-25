@@ -62,12 +62,32 @@ type QueueState = {
   };
   recentlyProcessed?: QueueMessage[];
   recentlyCompleted?: {
+    window?: string;
+    windowLabel?: string;
     processed?: number;
     failed?: number;
     total?: number;
     observations?: number;
     summaries?: number;
     windowMs?: number;
+  };
+  activityWindow?: {
+    window?: string;
+    windowLabel?: string;
+    observations?: number;
+    summaries?: number;
+    prompts?: number;
+    sessions?: number;
+    total?: number;
+  };
+  tokenMetrics?: {
+    window?: string;
+    windowLabel?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    estimatedCostUsd?: number;
+    source?: string;
   };
 };
 type ProcessingState = { pending?: number; processing?: number; active?: boolean };
@@ -86,8 +106,14 @@ type MemoryItem = {
   content_session_id?: string;
 };
 type EventItem = { name: string; data: unknown; at: number };
+type MetricWindow = "15m" | "24h" | "all";
 
 const TYPES = ["discovery", "decision", "implementation", "bugfix", "refactor", "constraint"];
+const WINDOWS: { id: MetricWindow; label: string }[] = [
+  { id: "15m", label: "15m" },
+  { id: "24h", label: "24h" },
+  { id: "all", label: "All" },
+];
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -140,8 +166,23 @@ function eventSummary(data: unknown) {
   return clip(JSON.stringify(data), 360);
 }
 
+function compactNumber(value?: number) {
+  const num = Number(value || 0);
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(num >= 10_000_000 ? 0 : 1)}m`;
+  if (num >= 1_000) return `${(num / 1_000).toFixed(num >= 10_000 ? 0 : 1)}k`;
+  return String(num);
+}
+
+function money(value?: number) {
+  const num = Number(value || 0);
+  if (num > 0 && num < 0.01) return `$${num.toFixed(4)}`;
+  return `$${num.toFixed(2)}`;
+}
+
 export default function Dashboard() {
   const [theme, setTheme] = useState("light");
+  const [metricWindow, setMetricWindow] = useState<MetricWindow>("15m");
+  const [settingsExpanded, setSettingsExpanded] = useState(true);
   const [tab, setTab] = useState("feed");
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("");
@@ -168,7 +209,17 @@ export default function Dashboard() {
     const saved = localStorage.getItem("cmemTheme") || "light";
     setTheme(saved);
     document.documentElement.dataset.theme = saved;
+    const savedWindow = localStorage.getItem("cmemMetricWindow") as MetricWindow | null;
+    if (savedWindow && WINDOWS.some((item) => item.id === savedWindow)) {
+      setMetricWindow(savedWindow);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!settingsExpanded) return;
+    const timer = window.setTimeout(() => setSettingsExpanded(false), 30_000);
+    return () => window.clearTimeout(timer);
+  }, [settingsExpanded, metricWindow]);
 
   async function refreshAll() {
     const [doctorData, projectData, obsData, summaryData, queueData, processingData] =
@@ -177,7 +228,7 @@ export default function Dashboard() {
         api<{ projects: Project[] }>("/api/projects"),
         api<{ observations: MemoryItem[] }>("/api/observations?limit=40"),
         api<{ summaries: MemoryItem[] }>("/api/summaries?limit=40"),
-        api<QueueState>("/api/pending-queue"),
+        api<QueueState>(`/api/pending-queue?window=${metricWindow}`),
         api<ProcessingState>("/api/processing-status"),
       ]);
     setDoctor(doctorData);
@@ -234,13 +285,17 @@ export default function Dashboard() {
       window.clearTimeout(refreshTimer);
       source.close();
     };
-  }, []);
+  }, [metricWindow]);
 
   const counts = doctor.counts || {};
   const activity = doctor.activity || {};
   const queueTotals = queue.queue || {};
   const queueRecent = queue.recentlyCompleted || {};
+  const activityWindow = queue.activityWindow || {};
+  const tokenMetrics = queue.tokenMetrics || {};
+  const windowLabel = queueRecent.windowLabel || activityWindow.windowLabel || "last 15m";
   const recent =
+    activityWindow.total ??
     (activity.observations15m || 0) + (activity.summaries15m || 0) + (activity.prompts15m || 0);
 
   const feed = useMemo(() => {
@@ -259,6 +314,12 @@ export default function Dashboard() {
     setTheme(next);
     localStorage.setItem("cmemTheme", next);
     document.documentElement.dataset.theme = next;
+  }
+
+  function changeMetricWindow(next: MetricWindow) {
+    setMetricWindow(next);
+    localStorage.setItem("cmemMetricWindow", next);
+    setSettingsExpanded(true);
   }
 
   async function runSearch() {
@@ -408,12 +469,6 @@ export default function Dashboard() {
             <button onClick={toggleTheme} title="Toggle theme">
               {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
-            <button onClick={openSettings} title="Settings">
-              <Settings size={16} />
-            </button>
-            <button onClick={openLogs} title="Logs">
-              <Logs size={16} />
-            </button>
           </div>
         </div>
       </header>
@@ -423,17 +478,23 @@ export default function Dashboard() {
           <Section title="Operational State">
             <div className="stats">
               <Stat label="worker" value={doctor.ok ? "healthy" : "down"} tone={doctor.ok ? "ok" : "bad"} />
-              <Stat label="memory formed 15m" value={recent} tone={recent ? "ok" : "warn"} />
+              <Stat label={`memory formed ${windowLabel}`} value={recent} tone={recent ? "ok" : "warn"} />
               <Stat
                 label="backlog p/r/f"
                 value={`${queueTotals.totalPending || 0}/${queueTotals.totalProcessing || processing.processing || 0}/${queueTotals.totalFailed || 0}`}
                 tone={queueTotals.stuckCount || queueTotals.totalFailed ? "bad" : "ok"}
               />
               <Stat
-                label="queue done 15m"
+                label={`queue done ${windowLabel}`}
                 value={`${queueRecent.processed || 0}/${queueRecent.failed || 0}`}
                 tone={queueRecent.failed ? "bad" : queueRecent.processed ? "ok" : "warn"}
               />
+              <Stat
+                label={`tokens in/out ${windowLabel}`}
+                value={`${compactNumber(tokenMetrics.inputTokens)}/${compactNumber(tokenMetrics.outputTokens)}`}
+                tone={tokenMetrics.totalTokens ? "ok" : "warn"}
+              />
+              <Stat label={`est cost ${windowLabel}`} value={money(tokenMetrics.estimatedCostUsd)} />
               <Stat label="indexed corpus" value={`${counts.observations || 0} obs`} tone={counts.observations ? "ok" : "warn"} />
               <Stat label="summaries" value={counts.summaries || 0} />
             </div>
@@ -493,11 +554,15 @@ export default function Dashboard() {
             </strong>
             <p className="muted small">
               pending {queueTotals.totalPending || 0}, processing {queueTotals.totalProcessing || 0}, failed{" "}
-              {queueTotals.totalFailed || 0}, stuck {queueTotals.stuckCount || 0}. Completed 15m: {queueRecent.processed || 0} processed,{" "}
+              {queueTotals.totalFailed || 0}, stuck {queueTotals.stuckCount || 0}. Completed {windowLabel}: {queueRecent.processed || 0} processed,{" "}
               {queueRecent.failed || 0} failed.
             </p>
             <p className="muted small">
               Recent mix: {queueRecent.observations || 0} observations, {queueRecent.summaries || 0} summaries.
+            </p>
+            <p className="muted small">
+              Tokens {windowLabel}: {compactNumber(tokenMetrics.inputTokens)} in,{" "}
+              {compactNumber(tokenMetrics.outputTokens)} out, {money(tokenMetrics.estimatedCostUsd)} est.
             </p>
             <div className="sideList">
               {queueTotals.messages?.length ? (
@@ -595,6 +660,42 @@ export default function Dashboard() {
         </section>
 
         <aside className="panel">
+          <Section title="Settings">
+            <button className="sectionToggle" onClick={() => setSettingsExpanded((value) => !value)}>
+              <Settings size={16} />
+              {settingsExpanded ? "Collapse" : "Expand"}
+            </button>
+            {settingsExpanded ? (
+              <div className="grid">
+                <div>
+                  <p className="muted small">Metric window</p>
+                  <div className="segmented">
+                    {WINDOWS.map((item) => (
+                      <button
+                        key={item.id}
+                        className={metricWindow === item.id ? "active" : ""}
+                        onClick={() => changeMetricWindow(item.id)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="split">
+                  <button onClick={openSettings}>
+                    <Settings size={16} />
+                    JSON
+                  </button>
+                  <button onClick={openLogs}>
+                    <Logs size={16} />
+                    Logs
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="muted small">Metric window: {windowLabel}</p>
+            )}
+          </Section>
           <Section title="Context Preview">
             <select value={contextProject} onChange={(event) => setContextProject(event.target.value)}>
               <option value="">Choose project</option>

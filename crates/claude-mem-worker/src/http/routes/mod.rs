@@ -1705,25 +1705,52 @@ pub async fn processing_set(State(state): State<AppState>) -> ApiResult<Value> {
     processing_status(State(state)).await
 }
 
-pub async fn pending_queue_get(State(state): State<AppState>) -> ApiResult<Value> {
-    let conn = state.conn.lock().unwrap();
-    let queue = pending_queue_rows(&conn, PendingQueueFilter::All)?;
-    Ok(Json(pending_queue_response(&conn, queue)?))
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueMetricsQuery {
+    window: Option<String>,
 }
 
-pub async fn pending_queue_all_get(State(state): State<AppState>) -> ApiResult<Value> {
-    pending_queue_get(State(state)).await
+pub async fn pending_queue_get(
+    State(state): State<AppState>,
+    Query(query): Query<QueueMetricsQuery>,
+) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let queue = pending_queue_rows(&conn, PendingQueueFilter::All)?;
+    Ok(Json(pending_queue_response(
+        &conn,
+        queue,
+        MetricsWindow::parse(query.window.as_deref()),
+    )?))
+}
+
+pub async fn pending_queue_all_get(
+    State(state): State<AppState>,
+    Query(query): Query<QueueMetricsQuery>,
+) -> ApiResult<Value> {
+    let conn = state.conn.lock().unwrap();
+    let queue = pending_queue_rows(&conn, PendingQueueFilter::All)?;
+    Ok(Json(pending_queue_response(
+        &conn,
+        queue,
+        MetricsWindow::parse(query.window.as_deref()),
+    )?))
 }
 
 pub async fn pending_queue_failed_get(State(state): State<AppState>) -> ApiResult<Value> {
     let conn = state.conn.lock().unwrap();
     let queue = pending_queue_rows(&conn, PendingQueueFilter::Failed)?;
-    Ok(Json(pending_queue_response(&conn, queue)?))
+    Ok(Json(pending_queue_response(
+        &conn,
+        queue,
+        MetricsWindow::FifteenMinutes,
+    )?))
 }
 
 fn pending_queue_response(
     conn: &rusqlite::Connection,
     queue: Vec<Value>,
+    window: MetricsWindow,
 ) -> Result<Value, ApiError> {
     let mut sessions: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     for row in &queue {
@@ -1754,8 +1781,10 @@ fn pending_queue_response(
             })
         })
         .collect::<Vec<_>>();
-    let recent = recent_queue_events(conn, 50, 15 * 60 * 1000)?;
-    let recent_totals = recent_queue_totals(&recent);
+    let recent = recent_queue_events(conn, 50, window)?;
+    let recent_totals = queue_event_totals(conn, window)?;
+    let activity = activity_for_window(conn, window)?;
+    let token_metrics = token_metrics_for_window(conn, window)?;
     let total_pending = queue
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("pending"))
@@ -1788,77 +1817,282 @@ fn pending_queue_response(
         },
         "recentlyProcessed": recent,
         "recentlyCompleted": recent_totals,
+        "activityWindow": activity,
+        "tokenMetrics": token_metrics,
         "sessionsWithPendingWork": sessions_with_pending_work
     }))
 }
 
-fn recent_queue_totals(events: &[Value]) -> Value {
-    let mut processed = 0usize;
-    let mut failed = 0usize;
-    let mut observations = 0usize;
-    let mut summaries = 0usize;
-    for event in events {
-        match event.get("status").and_then(Value::as_str) {
-            Some("processed") => processed += 1,
-            Some("failed") => failed += 1,
-            _ => {}
-        }
-        match event.get("messageType").and_then(Value::as_str) {
-            Some("observation") => observations += 1,
-            Some("summarize") => summaries += 1,
-            _ => {}
+#[derive(Debug, Clone, Copy)]
+enum MetricsWindow {
+    FifteenMinutes,
+    TwentyFourHours,
+    All,
+}
+
+impl MetricsWindow {
+    fn parse(value: Option<&str>) -> Self {
+        match value.unwrap_or("15m").trim().to_ascii_lowercase().as_str() {
+            "24h" | "day" | "1d" => Self::TwentyFourHours,
+            "all" | "all-time" | "all_time" => Self::All,
+            _ => Self::FifteenMinutes,
         }
     }
-    json!({
-        "windowMs": 15 * 60 * 1000,
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::FifteenMinutes => "15m",
+            Self::TwentyFourHours => "24h",
+            Self::All => "all",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::FifteenMinutes => "last 15m",
+            Self::TwentyFourHours => "last 24h",
+            Self::All => "all time",
+        }
+    }
+
+    fn millis(self) -> Option<i64> {
+        match self {
+            Self::FifteenMinutes => Some(15 * 60 * 1000),
+            Self::TwentyFourHours => Some(24 * 60 * 60 * 1000),
+            Self::All => None,
+        }
+    }
+
+    fn since(self) -> Option<i64> {
+        self.millis().map(|millis| now_timestamp().1 - millis)
+    }
+}
+
+fn queue_event_totals(
+    conn: &rusqlite::Connection,
+    window: MetricsWindow,
+) -> Result<Value, ApiError> {
+    let (processed, failed, observations, summaries): (i64, i64, i64, i64) =
+        if let Some(since) = window.since() {
+            conn.query_row(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN message_type = 'observation' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN message_type = 'summarize' THEN 1 ELSE 0 END), 0)
+                 FROM pending_message_events
+                 WHERE completed_at_epoch >= ?1",
+                [since],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+        } else {
+            conn.query_row(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN message_type = 'observation' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN message_type = 'summarize' THEN 1 ELSE 0 END), 0)
+                 FROM pending_message_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+        }
+        .map_err(ApiError::internal)?;
+    Ok(json!({
+        "window": window.key(),
+        "windowLabel": window.label(),
+        "windowMs": window.millis(),
         "processed": processed,
         "failed": failed,
         "total": processed + failed,
         "observations": observations,
         "summaries": summaries
-    })
+    }))
 }
 
 fn recent_queue_events(
     conn: &rusqlite::Connection,
     limit: i64,
-    window_ms: i64,
+    window: MetricsWindow,
 ) -> Result<Vec<Value>, ApiError> {
-    let since = now_timestamp().1 - window_ms;
-    let mut stmt = conn
-        .prepare(
-            "SELECT pending_message_id, session_db_id, content_session_id,
+    let since = window.since();
+    let sql = if since.is_some() {
+        "SELECT pending_message_id, session_db_id, content_session_id,
                     message_type, tool_name, status, retry_count,
                     created_at_epoch, started_processing_at_epoch,
                     completed_at_epoch, duration_ms, agent_type, agent_id
                FROM pending_message_events
               WHERE completed_at_epoch >= ?1
               ORDER BY completed_at_epoch DESC, id DESC
-              LIMIT ?2",
-        )
-        .map_err(ApiError::internal)?;
-    let rows = stmt
-        .query_map(rusqlite::params![since, limit], |row| {
-            Ok(json!({
-                "messageId": row.get::<_, i64>(0)?,
-                "sessionDbId": row.get::<_, i64>(1)?,
-                "contentSessionId": row.get::<_, String>(2)?,
-                "messageType": row.get::<_, String>(3)?,
-                "toolName": row.get::<_, Option<String>>(4)?,
-                "status": row.get::<_, String>(5)?,
-                "retryCount": row.get::<_, i64>(6)?,
-                "createdAtEpoch": row.get::<_, i64>(7)?,
-                "startedProcessingAtEpoch": row.get::<_, Option<i64>>(8)?,
-                "completedAtEpoch": row.get::<_, i64>(9)?,
-                "durationMs": row.get::<_, Option<i64>>(10)?,
-                "agentType": row.get::<_, Option<String>>(11)?,
-                "agentId": row.get::<_, Option<String>>(12)?,
-            }))
-        })
-        .map_err(ApiError::internal)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(ApiError::internal)?;
+              LIMIT ?2"
+    } else {
+        "SELECT pending_message_id, session_db_id, content_session_id,
+                    message_type, tool_name, status, retry_count,
+                    created_at_epoch, started_processing_at_epoch,
+                    completed_at_epoch, duration_ms, agent_type, agent_id
+               FROM pending_message_events
+              ORDER BY completed_at_epoch DESC, id DESC
+              LIMIT ?1"
+    };
+    let mut stmt = conn.prepare(sql).map_err(ApiError::internal)?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok(json!({
+            "messageId": row.get::<_, i64>(0)?,
+            "sessionDbId": row.get::<_, i64>(1)?,
+            "contentSessionId": row.get::<_, String>(2)?,
+            "messageType": row.get::<_, String>(3)?,
+            "toolName": row.get::<_, Option<String>>(4)?,
+            "status": row.get::<_, String>(5)?,
+            "retryCount": row.get::<_, i64>(6)?,
+            "createdAtEpoch": row.get::<_, i64>(7)?,
+            "startedProcessingAtEpoch": row.get::<_, Option<i64>>(8)?,
+            "completedAtEpoch": row.get::<_, i64>(9)?,
+            "durationMs": row.get::<_, Option<i64>>(10)?,
+            "agentType": row.get::<_, Option<String>>(11)?,
+            "agentId": row.get::<_, Option<String>>(12)?,
+        }))
+    };
+    let rows = if let Some(since) = since {
+        stmt.query_map(rusqlite::params![since, limit], map_row)
+    } else {
+        stmt.query_map(rusqlite::params![limit], map_row)
+    }
+    .map_err(ApiError::internal)?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(ApiError::internal)?;
     Ok(rows)
+}
+
+fn activity_for_window(
+    conn: &rusqlite::Connection,
+    window: MetricsWindow,
+) -> Result<Value, ApiError> {
+    let observations = count_for_window(conn, "observations", "created_at_epoch", window)?;
+    let summaries = count_for_window(conn, "session_summaries", "created_at_epoch", window)?;
+    let prompts = count_for_window(conn, "user_prompts", "created_at_epoch", window)?;
+    let sessions = count_for_window(conn, "sdk_sessions", "started_at_epoch", window)?;
+    Ok(json!({
+        "window": window.key(),
+        "windowLabel": window.label(),
+        "windowMs": window.millis(),
+        "observations": observations,
+        "summaries": summaries,
+        "prompts": prompts,
+        "sessions": sessions,
+        "total": observations + summaries + prompts
+    }))
+}
+
+fn token_metrics_for_window(
+    conn: &rusqlite::Connection,
+    window: MetricsWindow,
+) -> Result<Value, ApiError> {
+    let input_tokens = estimate_prompt_tokens(conn, window)?;
+    let observation_tokens = estimate_observation_tokens(conn, window)?;
+    let summary_tokens = estimate_summary_tokens(conn, window)?;
+    let output_tokens = observation_tokens + summary_tokens;
+    let input_cost_per_million = 3.0f64;
+    let output_cost_per_million = 15.0f64;
+    let estimated_cost_usd = ((input_tokens as f64 * input_cost_per_million)
+        + (output_tokens as f64 * output_cost_per_million))
+        / 1_000_000.0;
+    Ok(json!({
+        "window": window.key(),
+        "windowLabel": window.label(),
+        "windowMs": window.millis(),
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "totalTokens": input_tokens + output_tokens,
+        "observationTokens": observation_tokens,
+        "summaryTokens": summary_tokens,
+        "estimatedCostUsd": estimated_cost_usd,
+        "inputCostPerMillion": input_cost_per_million,
+        "outputCostPerMillion": output_cost_per_million,
+        "source": "estimated_from_persisted_text"
+    }))
+}
+
+fn count_for_window(
+    conn: &rusqlite::Connection,
+    table: &str,
+    epoch_column: &str,
+    window: MetricsWindow,
+) -> Result<i64, ApiError> {
+    if let Some(since) = window.since() {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE {epoch_column} >= ?1"),
+            [since],
+            |row| row.get(0),
+        )
+    } else {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+    }
+    .map_err(ApiError::internal)
+}
+
+fn estimate_prompt_tokens(
+    conn: &rusqlite::Connection,
+    window: MetricsWindow,
+) -> Result<i64, ApiError> {
+    estimate_text_tokens_for_window(
+        conn,
+        "user_prompts",
+        "created_at_epoch",
+        "prompt_text",
+        window,
+    )
+}
+
+fn estimate_observation_tokens(
+    conn: &rusqlite::Connection,
+    window: MetricsWindow,
+) -> Result<i64, ApiError> {
+    estimate_text_tokens_for_window(
+        conn,
+        "observations",
+        "created_at_epoch",
+        "coalesce(title,'') || ' ' || coalesce(subtitle,'') || ' ' || coalesce(text,'') || ' ' || coalesce(facts,'') || ' ' || coalesce(narrative,'') || ' ' || coalesce(concepts,'')",
+        window,
+    )
+}
+
+fn estimate_summary_tokens(
+    conn: &rusqlite::Connection,
+    window: MetricsWindow,
+) -> Result<i64, ApiError> {
+    estimate_text_tokens_for_window(
+        conn,
+        "session_summaries",
+        "created_at_epoch",
+        "coalesce(request,'') || ' ' || coalesce(investigated,'') || ' ' || coalesce(learned,'') || ' ' || coalesce(completed,'') || ' ' || coalesce(next_steps,'') || ' ' || coalesce(notes,'')",
+        window,
+    )
+}
+
+fn estimate_text_tokens_for_window(
+    conn: &rusqlite::Connection,
+    table: &str,
+    epoch_column: &str,
+    text_expr: &str,
+    window: MetricsWindow,
+) -> Result<i64, ApiError> {
+    let sql = if window.since().is_some() {
+        format!(
+            "SELECT COALESCE(SUM((length({text_expr}) + 3) / 4), 0)
+               FROM {table}
+              WHERE {epoch_column} >= ?1"
+        )
+    } else {
+        format!("SELECT COALESCE(SUM((length({text_expr}) + 3) / 4), 0) FROM {table}")
+    };
+    if let Some(since) = window.since() {
+        conn.query_row(&sql, [since], |row| row.get(0))
+    } else {
+        conn.query_row(&sql, [], |row| row.get(0))
+    }
+    .map_err(ApiError::internal)
 }
 
 pub async fn pending_queue_process(State(state): State<AppState>) -> ApiResult<Value> {
