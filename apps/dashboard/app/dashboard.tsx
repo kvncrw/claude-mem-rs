@@ -51,13 +51,22 @@ type Doctor = {
 };
 
 type Project = { project: string; observationCount?: number; latestEpoch?: number };
-type QueueMessage = { id: number; messageType?: string; status?: string };
+type QueueMessage = { id?: number; messageId?: number; messageType?: string; status?: string };
 type QueueState = {
   queue?: {
     messages?: QueueMessage[];
     totalPending?: number;
     totalProcessing?: number;
     totalFailed?: number;
+  };
+  recentlyProcessed?: QueueMessage[];
+  recentlyCompleted?: {
+    processed?: number;
+    failed?: number;
+    total?: number;
+    observations?: number;
+    summaries?: number;
+    windowMs?: number;
   };
 };
 type ProcessingState = { pending?: number; processing?: number; active?: boolean };
@@ -229,6 +238,7 @@ export default function Dashboard() {
   const counts = doctor.counts || {};
   const activity = doctor.activity || {};
   const queueTotals = queue.queue || {};
+  const queueRecent = queue.recentlyCompleted || {};
   const recent =
     (activity.observations15m || 0) + (activity.summaries15m || 0) + (activity.prompts15m || 0);
 
@@ -418,9 +428,13 @@ export default function Dashboard() {
                 value={`${queueTotals.totalPending || 0}/${queueTotals.totalProcessing || processing.processing || 0}/${queueTotals.totalFailed || 0}`}
                 tone={queueTotals.totalFailed ? "bad" : "ok"}
               />
+              <Stat
+                label="queue done 15m"
+                value={`${queueRecent.processed || 0}/${queueRecent.failed || 0}`}
+                tone={queueRecent.failed ? "bad" : queueRecent.processed ? "ok" : "warn"}
+              />
               <Stat label="indexed corpus" value={`${counts.observations || 0} obs`} tone={counts.observations ? "ok" : "warn"} />
               <Stat label="summaries" value={counts.summaries || 0} />
-              <Stat label="prompts indexed" value={counts.prompts || 0} />
             </div>
             <div className="ops">
               <Op label="MCP tools" value={doctor.mcpReady ? "ready" : "not ready"} tone={doctor.mcpReady ? "ok" : "bad"} />
@@ -472,14 +486,26 @@ export default function Dashboard() {
             </strong>
             <p className="muted small">
               pending {queueTotals.totalPending || 0}, processing {queueTotals.totalProcessing || 0}, failed{" "}
-              {queueTotals.totalFailed || 0}. Successful rows are removed after processing.
+              {queueTotals.totalFailed || 0}. Completed 15m: {queueRecent.processed || 0} processed, {queueRecent.failed || 0} failed.
+            </p>
+            <p className="muted small">
+              Recent mix: {queueRecent.observations || 0} observations, {queueRecent.summaries || 0} summaries.
             </p>
             <div className="sideList">
               {queueTotals.messages?.length ? (
                 queueTotals.messages.slice(0, 20).map((message) => (
-                  <div className="sideRow" key={message.id}>
+                  <div className="sideRow" key={message.id || message.messageId}>
                     <span>
-                      #{message.id} {message.messageType || "message"}
+                      #{message.id || message.messageId} {message.messageType || "message"}
+                    </span>
+                    <span>{message.status}</span>
+                  </div>
+                ))
+              ) : queue.recentlyProcessed?.length ? (
+                queue.recentlyProcessed.slice(0, 8).map((message) => (
+                  <div className="sideRow" key={message.messageId}>
+                    <span>
+                      #{message.messageId} {message.messageType || "message"}
                     </span>
                     <span>{message.status}</span>
                   </div>

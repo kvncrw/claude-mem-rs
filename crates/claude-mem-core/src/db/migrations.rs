@@ -7,12 +7,7 @@
 use rusqlite::{params, Connection, Result};
 
 pub(crate) fn is_version_applied(conn: &Connection, version: i32) -> Result<bool> {
-    let has_table: bool = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_versions'",
-        [],
-        |r| r.get::<_, i32>(0),
-    )? > 0;
-    if !has_table {
+    if !table_exists(conn, "schema_versions")? {
         return Ok(false);
     }
     let count: i32 = conn.query_row(
@@ -23,7 +18,16 @@ pub(crate) fn is_version_applied(conn: &Connection, version: i32) -> Result<bool
     Ok(count > 0)
 }
 
-/// Apply all known migrations (v4..v26) to `conn`. Idempotent: each
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |r| r.get::<_, i32>(0),
+    )
+    .map(|count| count > 0)
+}
+
+/// Apply all known migrations (v4..v27) to `conn`. Idempotent: each
 /// `apply_vN` dispatcher checks `is_version_applied` first, so a second
 /// `apply_all` call on a fully-migrated schema is a no-op.
 pub fn apply_all(conn: &Connection) -> Result<()> {
@@ -81,8 +85,8 @@ pub fn apply_all(conn: &Connection) -> Result<()> {
     if !is_version_applied(conn, 26)? {
         apply_v26(conn)?;
     }
-    if !is_version_applied(conn, 26)? {
-        apply_v26(conn)?;
+    if !is_version_applied(conn, 27)? || !table_exists(conn, "pending_message_events")? {
+        apply_v27(conn)?;
     }
     Ok(())
 }
@@ -700,6 +704,43 @@ fn apply_v26(conn: &Connection) -> Result<()> {
     tx.commit()
 }
 
+/// v27: durable queue outcome history. Successful pending rows are deleted
+/// after processing, so dashboard/API KPIs need a separate recent-completion
+/// table to show drain rate.
+fn apply_v27(conn: &Connection) -> Result<()> {
+    const V: i32 = 27;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pending_message_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pending_message_id INTEGER NOT NULL,
+            session_db_id INTEGER NOT NULL,
+            content_session_id TEXT NOT NULL,
+            message_type TEXT NOT NULL CHECK (message_type IN ('observation','summarize')),
+            tool_name TEXT,
+            status TEXT NOT NULL CHECK (status IN ('processed','failed')),
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            created_at_epoch INTEGER NOT NULL,
+            started_processing_at_epoch INTEGER,
+            completed_at_epoch INTEGER NOT NULL,
+            duration_ms INTEGER,
+            agent_type TEXT,
+            agent_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_message_events_completed
+            ON pending_message_events(completed_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_pending_message_events_status_completed
+            ON pending_message_events(status, completed_at_epoch DESC);
+        CREATE INDEX IF NOT EXISTS idx_pending_message_events_session
+            ON pending_message_events(content_session_id);",
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
+        [V],
+    )?;
+    tx.commit()
+}
+
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -747,9 +788,9 @@ mod tests {
         let applied: i32 = conn
             .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r.get(0))
             .unwrap();
-        // 18 migrations: v4,5,6,7,8,9,10,11,16,17,19,20,21,22,23,24,25,26.
+        // 19 migrations: v4,5,6,7,8,9,10,11,16,17,19,20,21,22,23,24,25,26,27.
         // (v1-v3 never existed; v12-v15, v18 are gaps in the TS runner.)
-        assert_eq!(applied, 18);
+        assert_eq!(applied, 19);
     }
 
     #[test]
@@ -760,7 +801,7 @@ mod tests {
         let applied: i32 = conn
             .query_row("SELECT COUNT(*) FROM schema_versions", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(applied, 18);
+        assert_eq!(applied, 19);
     }
 
     #[test]
@@ -775,6 +816,7 @@ mod tests {
             "user_prompts",
             "user_prompts_fts",
             "pending_messages",
+            "pending_message_events",
             "observation_feedback",
         ] {
             let count: i32 = conn
@@ -786,5 +828,30 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "table {table} should exist");
         }
+    }
+
+    #[test]
+    fn v27_repairs_missing_queue_history_table_even_if_version_marker_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_all(&conn).unwrap();
+        conn.execute("DROP TABLE pending_message_events", [])
+            .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_versions (version) VALUES (27)",
+            [],
+        )
+        .unwrap();
+
+        apply_all(&conn).unwrap();
+
+        let count: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type='table' AND name='pending_message_events'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

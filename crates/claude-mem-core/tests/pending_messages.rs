@@ -164,6 +164,79 @@ fn claim_message_by_id_claims_only_the_target_pending_row() {
 }
 
 #[test]
+fn confirm_processed_records_recent_queue_history_and_deletes_active_row() {
+    let conn = open_in_memory().unwrap();
+    let store = PendingMessageStore::new(3);
+    let db_id = create_session(&conn, CONTENT);
+    let message_id = enqueue_msg(&store, &conn, db_id);
+    let claimed = store
+        .claim_message_by_id(&conn, message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.id, message_id);
+
+    store.confirm_processed(&conn, message_id).unwrap();
+
+    let active_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pending_messages WHERE id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active_count, 0);
+
+    let (status, content_session_id, message_type): (String, String, String) = conn
+        .query_row(
+            "SELECT status, content_session_id, message_type
+               FROM pending_message_events
+              WHERE pending_message_id = ?1",
+            [message_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "processed");
+    assert_eq!(content_session_id, CONTENT);
+    assert_eq!(message_type, "observation");
+}
+
+#[test]
+fn permanent_failure_records_queue_history() {
+    let conn = open_in_memory().unwrap();
+    let store = PendingMessageStore::new(1);
+    let db_id = create_session(&conn, CONTENT);
+    let message_id = enqueue_msg(&store, &conn, db_id);
+    store
+        .claim_message_by_id(&conn, message_id)
+        .unwrap()
+        .unwrap();
+
+    let outcome = store.mark_failed(&conn, message_id).unwrap();
+    assert_eq!(
+        outcome,
+        claude_mem_core::db::pending_messages::MarkFailedOutcome::PermanentlyFailed
+    );
+
+    let active_status: String = conn
+        .query_row(
+            "SELECT status FROM pending_messages WHERE id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active_status, "failed");
+
+    let history_status: String = conn
+        .query_row(
+            "SELECT status FROM pending_message_events WHERE pending_message_id = ?1",
+            [message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(history_status, "failed");
+}
+
+#[test]
 fn recovery_and_claim_is_atomic_within_single_call() {
     let conn = open_in_memory().unwrap();
     let store = PendingMessageStore::new(3);

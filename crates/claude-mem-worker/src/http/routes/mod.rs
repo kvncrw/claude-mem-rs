@@ -1708,7 +1708,7 @@ pub async fn processing_set(State(state): State<AppState>) -> ApiResult<Value> {
 pub async fn pending_queue_get(State(state): State<AppState>) -> ApiResult<Value> {
     let conn = state.conn.lock().unwrap();
     let queue = pending_queue_rows(&conn, PendingQueueFilter::All)?;
-    Ok(Json(pending_queue_response(queue)))
+    Ok(Json(pending_queue_response(&conn, queue)?))
 }
 
 pub async fn pending_queue_all_get(State(state): State<AppState>) -> ApiResult<Value> {
@@ -1718,10 +1718,13 @@ pub async fn pending_queue_all_get(State(state): State<AppState>) -> ApiResult<V
 pub async fn pending_queue_failed_get(State(state): State<AppState>) -> ApiResult<Value> {
     let conn = state.conn.lock().unwrap();
     let queue = pending_queue_rows(&conn, PendingQueueFilter::Failed)?;
-    Ok(Json(pending_queue_response(queue)))
+    Ok(Json(pending_queue_response(&conn, queue)?))
 }
 
-fn pending_queue_response(queue: Vec<Value>) -> Value {
+fn pending_queue_response(
+    conn: &rusqlite::Connection,
+    queue: Vec<Value>,
+) -> Result<Value, ApiError> {
     let mut sessions: BTreeMap<String, (usize, usize, usize)> = BTreeMap::new();
     for row in &queue {
         let Some(content_session_id) = row
@@ -1751,6 +1754,8 @@ fn pending_queue_response(queue: Vec<Value>) -> Value {
             })
         })
         .collect::<Vec<_>>();
+    let recent = recent_queue_events(conn, 50, 15 * 60 * 1000)?;
+    let recent_totals = recent_queue_totals(&recent);
     let total_pending = queue
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("pending"))
@@ -1763,7 +1768,7 @@ fn pending_queue_response(queue: Vec<Value>) -> Value {
         .iter()
         .filter(|row| row.get("status").and_then(Value::as_str) == Some("failed"))
         .count();
-    json!({
+    Ok(json!({
         "queue": {
             "messages": queue,
             "totalPending": total_pending,
@@ -1771,9 +1776,79 @@ fn pending_queue_response(queue: Vec<Value>) -> Value {
             "totalFailed": total_failed,
             "stuckCount": 0
         },
-        "recentlyProcessed": [],
+        "recentlyProcessed": recent,
+        "recentlyCompleted": recent_totals,
         "sessionsWithPendingWork": sessions_with_pending_work
+    }))
+}
+
+fn recent_queue_totals(events: &[Value]) -> Value {
+    let mut processed = 0usize;
+    let mut failed = 0usize;
+    let mut observations = 0usize;
+    let mut summaries = 0usize;
+    for event in events {
+        match event.get("status").and_then(Value::as_str) {
+            Some("processed") => processed += 1,
+            Some("failed") => failed += 1,
+            _ => {}
+        }
+        match event.get("messageType").and_then(Value::as_str) {
+            Some("observation") => observations += 1,
+            Some("summarize") => summaries += 1,
+            _ => {}
+        }
+    }
+    json!({
+        "windowMs": 15 * 60 * 1000,
+        "processed": processed,
+        "failed": failed,
+        "total": processed + failed,
+        "observations": observations,
+        "summaries": summaries
     })
+}
+
+fn recent_queue_events(
+    conn: &rusqlite::Connection,
+    limit: i64,
+    window_ms: i64,
+) -> Result<Vec<Value>, ApiError> {
+    let since = now_timestamp().1 - window_ms;
+    let mut stmt = conn
+        .prepare(
+            "SELECT pending_message_id, session_db_id, content_session_id,
+                    message_type, tool_name, status, retry_count,
+                    created_at_epoch, started_processing_at_epoch,
+                    completed_at_epoch, duration_ms, agent_type, agent_id
+               FROM pending_message_events
+              WHERE completed_at_epoch >= ?1
+              ORDER BY completed_at_epoch DESC, id DESC
+              LIMIT ?2",
+        )
+        .map_err(ApiError::internal)?;
+    let rows = stmt
+        .query_map(rusqlite::params![since, limit], |row| {
+            Ok(json!({
+                "messageId": row.get::<_, i64>(0)?,
+                "sessionDbId": row.get::<_, i64>(1)?,
+                "contentSessionId": row.get::<_, String>(2)?,
+                "messageType": row.get::<_, String>(3)?,
+                "toolName": row.get::<_, Option<String>>(4)?,
+                "status": row.get::<_, String>(5)?,
+                "retryCount": row.get::<_, i64>(6)?,
+                "createdAtEpoch": row.get::<_, i64>(7)?,
+                "startedProcessingAtEpoch": row.get::<_, Option<i64>>(8)?,
+                "completedAtEpoch": row.get::<_, i64>(9)?,
+                "durationMs": row.get::<_, Option<i64>>(10)?,
+                "agentType": row.get::<_, Option<String>>(11)?,
+                "agentId": row.get::<_, Option<String>>(12)?,
+            }))
+        })
+        .map_err(ApiError::internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::internal)?;
+    Ok(rows)
 }
 
 pub async fn pending_queue_process(State(state): State<AppState>) -> ApiResult<Value> {

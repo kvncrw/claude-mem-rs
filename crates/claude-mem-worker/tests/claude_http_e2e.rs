@@ -734,6 +734,12 @@ async fn v12_compatibility_routes_are_available() {
     assert_eq!(queue["sessionsWithPendingWork"][0]["pending"], 1);
     assert_eq!(queue["sessionsWithPendingWork"][0]["failed"], 1);
     assert_eq!(queue["sessionsWithPendingWork"][0]["total"], 2);
+    assert_eq!(queue["recentlyCompleted"]["failed"], 1);
+    assert_eq!(queue["recentlyCompleted"]["processed"], 1);
+    assert_eq!(
+        queue["recentlyProcessed"][0]["status"].as_str().unwrap(),
+        "failed"
+    );
 
     let (status, all) = get_json(app.clone(), "/api/pending-queue/all").await;
     assert_eq!(status, StatusCode::OK);
@@ -894,12 +900,22 @@ async fn fake_agent_runner_processes_queued_observation_xml() {
     );
 
     let (status, search) = get_json(
-        app,
+        app.clone(),
         "/api/search?query=fake&project=cloudy-fork&type=observations",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(search["observations"][0]["title"], "Fake observer response");
+
+    let (status, queue) = get_json(app, "/api/pending-queue").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(queue["queue"]["totalPending"], 0);
+    assert_eq!(queue["recentlyCompleted"]["processed"], 1);
+    assert_eq!(queue["recentlyCompleted"]["observations"], 1);
+    assert_eq!(
+        queue["recentlyProcessed"][0]["status"].as_str().unwrap(),
+        "processed"
+    );
 }
 
 #[tokio::test]

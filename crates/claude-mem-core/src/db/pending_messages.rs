@@ -179,8 +179,11 @@ impl PendingMessageStore {
         get_by_id(conn, id)
     }
 
-    /// Mark message as successfully processed; deletes the row.
+    /// Mark message as successfully processed; records a durable completion
+    /// event and deletes the active queue row.
     pub fn confirm_processed(&self, conn: &Connection, id: i64) -> Result<()> {
+        let now_ms = now_epoch_ms();
+        record_queue_event(conn, id, "processed", now_ms)?;
         conn.execute("DELETE FROM pending_messages WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -189,10 +192,7 @@ impl PendingMessageStore {
     /// row returns to `pending` with `retry_count + 1`; otherwise it's
     /// permanently marked `failed`.
     pub fn mark_failed(&self, conn: &Connection, id: i64) -> Result<MarkFailedOutcome> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
+        let now_ms = now_epoch_ms();
         let current: Option<(i64, i64)> = conn
             .query_row(
                 "SELECT retry_count, ?1 >= ?2 FROM pending_messages
@@ -215,6 +215,7 @@ impl PendingMessageStore {
                   WHERE id = ?2",
                 params![now_ms, id],
             )?;
+            record_queue_event(conn, id, "failed", now_ms)?;
             Ok(MarkFailedOutcome::PermanentlyFailed)
         } else {
             conn.execute(
@@ -228,6 +229,41 @@ impl PendingMessageStore {
             Ok(MarkFailedOutcome::Retried(retry_count + 1))
         }
     }
+}
+
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+fn record_queue_event(
+    conn: &Connection,
+    pending_message_id: i64,
+    status: &str,
+    completed_at_epoch: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pending_message_events
+            (pending_message_id, session_db_id, content_session_id, message_type,
+             tool_name, status, retry_count, created_at_epoch,
+             started_processing_at_epoch, completed_at_epoch, duration_ms,
+             agent_type, agent_id)
+         SELECT id, session_db_id, content_session_id, message_type,
+                tool_name, ?1, retry_count, created_at_epoch,
+                started_processing_at_epoch, ?2,
+                CASE
+                    WHEN started_processing_at_epoch IS NOT NULL
+                    THEN MAX(0, ?2 - started_processing_at_epoch)
+                    ELSE NULL
+                END,
+                agent_type, agent_id
+           FROM pending_messages
+          WHERE id = ?3",
+        params![status, completed_at_epoch, pending_message_id],
+    )?;
+    Ok(())
 }
 
 fn redact_json_value(value: &Value) -> Value {
