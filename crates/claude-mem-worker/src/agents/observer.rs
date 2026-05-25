@@ -265,6 +265,17 @@ async fn process_claimed_message(
             {
                 Ok(output) => output,
                 Err(fallback_error) => {
+                    if process_local_provider_failure_fallback(
+                        conn,
+                        pending_store,
+                        &session,
+                        &message,
+                        &mut active_session,
+                        model_id.clone(),
+                        stats,
+                    )? {
+                        return Ok(());
+                    }
                     let conn = conn.lock().unwrap();
                     let _ = pending_store.mark_failed(&conn, message.id)?;
                     stats.messages_failed += 1;
@@ -279,6 +290,17 @@ async fn process_claimed_message(
             }
         }
         Err(error) => {
+            if process_local_provider_failure_fallback(
+                conn,
+                pending_store,
+                &session,
+                &message,
+                &mut active_session,
+                model_id.clone(),
+                stats,
+            )? {
+                return Ok(());
+            }
             let conn = conn.lock().unwrap();
             let _ = pending_store.mark_failed(&conn, message.id)?;
             stats.messages_failed += 1;
@@ -321,6 +343,52 @@ async fn process_claimed_message(
         );
     }
     Ok(())
+}
+
+fn process_local_provider_failure_fallback(
+    conn: &Arc<Mutex<Connection>>,
+    pending_store: &PendingMessageStore,
+    session: &SdkSessionRow,
+    message: &PendingMessageRow,
+    active_session: &mut ActiveSession,
+    model_id: Option<String>,
+    stats: &mut QueueProcessStats,
+) -> Result<bool, ObserverError> {
+    if std::env::var("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK").as_deref() == Ok("false") {
+        return Ok(false);
+    }
+    if message.retry_count + 1 < pending_store.max_retries {
+        return Ok(false);
+    }
+    let output = local_output(session, Some(message), model_id);
+    let conn = conn.lock().unwrap();
+    ensure_memory_session_id(
+        &conn,
+        active_session,
+        output.memory_session_id.as_deref(),
+        &output.provider,
+    )?;
+    let processed_response = process_agent_response(
+        &conn,
+        &output.text,
+        active_session,
+        pending_store,
+        None,
+        ProcessAgentResponseOptions {
+            original_timestamp: Some(message.created_at_epoch),
+            agent_name: output.provider,
+            model_id: output.model_id,
+            ..Default::default()
+        },
+    )?;
+    stats.messages_processed += 1;
+    stats.observations_inserted += processed_response.storage.inserted as usize;
+    stats.summaries_inserted += usize::from(processed_response.summary.is_some());
+    push_unique_observation_ids(
+        &mut stats.observation_ids,
+        processed_response.storage.observation_ids,
+    );
+    Ok(true)
 }
 
 pub async fn process_session_init(
@@ -701,8 +769,10 @@ fn build_prompt_for_message(session: &SdkSessionRow, message: &PendingMessageRow
             session_db_id: session.id,
             memory_session_id: session.memory_session_id.clone(),
             project: session.project.clone(),
-            user_prompt: session.user_prompt.clone().unwrap_or_default(),
-            last_assistant_message: message.last_assistant_message.clone().unwrap_or_default(),
+            user_prompt: sanitize_prompt_text(&session.user_prompt.clone().unwrap_or_default()),
+            last_assistant_message: sanitize_prompt_text(
+                &message.last_assistant_message.clone().unwrap_or_default(),
+            ),
         }),
         _ => build_observation_prompt(&ObservationPromptInput {
             tool_name: message.tool_name.clone().unwrap_or_else(|| "Tool".into()),
@@ -1104,8 +1174,17 @@ fn should_resume_claude(session: &SdkSessionRow, message: Option<&PendingMessage
     session
         .memory_session_id
         .as_deref()
-        .is_some_and(|id| !id.trim().is_empty())
+        .is_some_and(is_claude_session_id)
         && message.is_some()
+}
+
+fn is_claude_session_id(id: &str) -> bool {
+    let value = id.trim();
+    value.len() == 36
+        && value.chars().enumerate().all(|(idx, ch)| match idx {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        })
 }
 
 fn provider_timeout(key: &str, default_secs: u64) -> Duration {
@@ -1196,9 +1275,10 @@ fn push_unique_observation_ids(target: &mut Vec<i64>, source: Vec<i64>) {
 }
 
 fn compact_json(value: Option<&Value>) -> String {
-    value
+    let text = value
         .map(|value| serde_json::to_string(value).unwrap_or_else(|_| value.to_string()))
-        .unwrap_or_else(|| "{}".to_owned())
+        .unwrap_or_else(|| "{}".to_owned());
+    sanitize_prompt_text(&text)
 }
 
 fn xml_escape(value: &str) -> String {
@@ -1206,6 +1286,66 @@ fn xml_escape(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+fn sanitize_prompt_text(value: &str) -> String {
+    truncate_prompt_text(&redact_prompt_secrets(value))
+}
+
+fn truncate_prompt_text(value: &str) -> String {
+    let limit = std::env::var("CLAUDE_MEM_OBSERVER_FIELD_MAX_CHARS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(20_000);
+    if value.len() <= limit {
+        return value.to_owned();
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[truncated {} bytes by claude-mem-rs observer prompt bound]",
+        &value[..end],
+        value.len().saturating_sub(end)
+    )
+}
+
+fn redact_prompt_secrets(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|part| {
+            if looks_like_prompt_secret(part) {
+                redact_prompt_secret_part(part)
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn looks_like_prompt_secret(part: &str) -> bool {
+    let trimmed =
+        part.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_');
+    trimmed.starts_with("sk-")
+        || trimmed.starts_with("sk_")
+        || trimmed.starts_with("sk-proj-")
+        || trimmed.starts_with("sk-or-")
+        || trimmed.starts_with("ghp_")
+        || trimmed.starts_with("github_pat_")
+}
+
+fn redact_prompt_secret_part(part: &str) -> String {
+    let start = part
+        .find(|ch: char| ch.is_ascii_alphanumeric())
+        .unwrap_or(0);
+    let end = part
+        .rfind(|ch: char| ch.is_ascii_alphanumeric())
+        .map(|idx| idx + 1)
+        .unwrap_or(part.len());
+    format!("{}[REDACTED]{}", &part[..start], &part[end..])
 }
 
 fn env_non_empty(key: &str) -> Option<String> {
@@ -1316,5 +1456,29 @@ mod tests {
         let mut ids = vec![10, 11];
         push_unique_observation_ids(&mut ids, vec![11, 12, 10, 13]);
         assert_eq!(ids, vec![10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn observer_prompt_fields_are_redacted_and_bounded() {
+        let prior = std::env::var_os("CLAUDE_MEM_OBSERVER_FIELD_MAX_CHARS");
+        std::env::set_var("CLAUDE_MEM_OBSERVER_FIELD_MAX_CHARS", "20");
+        let text = sanitize_prompt_text("token sk-proj-abcdef1234567890 and trailing content");
+        assert!(!text.contains("sk-proj-abcdef"));
+        assert!(text.contains("[REDACTED]"));
+        assert!(text.contains("[truncated"));
+        if let Some(value) = prior {
+            std::env::set_var("CLAUDE_MEM_OBSERVER_FIELD_MAX_CHARS", value);
+        } else {
+            std::env::remove_var("CLAUDE_MEM_OBSERVER_FIELD_MAX_CHARS");
+        }
+    }
+
+    #[test]
+    fn claude_resume_only_uses_real_claude_session_ids() {
+        assert!(is_claude_session_id("d2119105-b4fb-4a42-8378-4368f90d1b1e"));
+        assert!(!is_claude_session_id(
+            "local-memory:bd12f778-e1f2-47eb-bb71-4eb82f8e686c"
+        ));
+        assert!(!is_claude_session_id(""));
     }
 }

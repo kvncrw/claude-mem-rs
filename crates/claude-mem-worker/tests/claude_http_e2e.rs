@@ -932,14 +932,16 @@ async fn observer_queue_marks_provider_failures_and_keeps_draining_session() {
     let _guard = ENV_LOCK.lock().await;
     let prior_command = std::env::var_os("CLAUDE_MEM_CLAUDE_COMMAND");
     let prior_args = std::env::var_os("CLAUDE_MEM_CLAUDE_ARGS");
+    let prior_fallback = std::env::var_os("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK");
     std::env::set_var("CLAUDE_MEM_CLAUDE_COMMAND", "/bin/false");
     std::env::set_var("CLAUDE_MEM_CLAUDE_ARGS", "");
+    std::env::set_var("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK", "false");
 
     let state = AppState::in_memory().unwrap();
     let app = build_router_with_state(state.clone());
 
     let (status, init) = json_request(
-        app,
+        app.clone(),
         Method::POST,
         "/api/sessions/init",
         json!({
@@ -1013,6 +1015,87 @@ async fn observer_queue_marks_provider_failures_and_keeps_draining_session() {
     } else {
         std::env::remove_var("CLAUDE_MEM_CLAUDE_ARGS");
     }
+    restore_env("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK", prior_fallback);
+}
+
+#[tokio::test]
+async fn observer_queue_uses_local_fallback_on_final_provider_failure() {
+    let _guard = ENV_LOCK.lock().await;
+    let prior_command = std::env::var_os("CLAUDE_MEM_CLAUDE_COMMAND");
+    let prior_args = std::env::var_os("CLAUDE_MEM_CLAUDE_ARGS");
+    let prior_fallback = std::env::var_os("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK");
+    std::env::set_var("CLAUDE_MEM_CLAUDE_COMMAND", "/bin/false");
+    std::env::set_var("CLAUDE_MEM_CLAUDE_ARGS", "");
+    std::env::remove_var("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK");
+
+    let state = AppState::in_memory().unwrap();
+    let app = build_router_with_state(state.clone());
+    let (status, init) = json_request(
+        app.clone(),
+        Method::POST,
+        "/api/sessions/init",
+        json!({
+            "contentSessionId": "provider-final-fallback-e2e",
+            "project": "cloudy-fork",
+            "prompt": "Queue provider fallback smoke."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let session_db_id = init["sessionDbId"].as_i64().unwrap();
+
+    {
+        let conn = state.conn.lock().unwrap();
+        let session = get_session_by_content_id(&conn, "provider-final-fallback-e2e")
+            .unwrap()
+            .unwrap();
+        let id = PendingMessageStore::default()
+            .enqueue(
+                &conn,
+                &EnqueueInput {
+                    session_db_id,
+                    content_session_id: session.content_session_id,
+                    message_type: "observation".into(),
+                    tool_name: Some("Read".into()),
+                    tool_response: Some(json!({ "content": "final fallback marker" })),
+                    created_at_epoch: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE pending_messages SET retry_count = 2 WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    }
+
+    let stats = process_pending_for_session(
+        Arc::clone(&state.conn),
+        session_db_id,
+        ObserverConfig {
+            provider: "claude".into(),
+            model_id: Some("sonnet".into()),
+            tier_routing_enabled: true,
+            simple_model: None,
+            summary_model: None,
+            max_messages: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.messages_failed, 0);
+    assert_eq!(stats.messages_processed, 1);
+    assert_eq!(stats.observations_inserted, 1);
+
+    let (status, queue) = get_json(app, "/api/pending-queue").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(queue["queue"]["totalFailed"], 0);
+    assert_eq!(queue["queue"]["totalPending"], 0);
+
+    restore_env("CLAUDE_MEM_CLAUDE_COMMAND", prior_command);
+    restore_env("CLAUDE_MEM_CLAUDE_ARGS", prior_args);
+    restore_env("CLAUDE_MEM_PROVIDER_FAILURE_LOCAL_FALLBACK", prior_fallback);
 }
 
 #[tokio::test]
