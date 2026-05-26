@@ -49,7 +49,7 @@ Implemented in Rust:
 - Persistent SSE broadcaster for live observation, summary, session, queue, and manual-memory events.
 - Claude Stop/summarize transcript extraction with system-reminder stripping and session completion.
 - Rich browser UI for feed/search/timeline/context/admin/queue/logs/settings workflows.
-- POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, and Codex transcript setup.
+- Cross-platform installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, Codex transcript setup, opencode MCP/plugin setup, and persistent worker/transcript watcher services.
 - Generic background transcript watcher daemon with schema config, offset state, tool pairing, summaries, and AGENTS context updates.
 - Real-provider smoke tests for Claude CLI, Gemini CLI, and Codex CLI behind `CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1`.
 - OpenRouter live smoke is available behind `CLAUDE_MEM_LIVE_OPENROUTER_SMOKE=1`; it requires a valid OpenRouter key.

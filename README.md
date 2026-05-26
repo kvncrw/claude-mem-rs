@@ -1,6 +1,6 @@
 # claude-mem-rs
 
-Native Rust port of [`claude-mem`](https://github.com/thedotmack/claude-mem), focused on the Claude Code memory lifecycle on Unix-like systems.
+Native Rust port of [`claude-mem`](https://github.com/thedotmack/claude-mem), focused on the Claude Code memory lifecycle across Linux, macOS, and Windows.
 
 This repository is a Rust workspace that replaces the TypeScript/Bun runtime with native binaries:
 
@@ -12,25 +12,24 @@ This repository is a Rust workspace that replaces the TypeScript/Bun runtime wit
 - `claude-mem-sdk`: parser and prompt-building helpers with no service I/O dependencies.
 - `claude-mem-supervisor`: process, health, PID, shutdown, and hook support code.
 
-Linux and macOS are the supported runtime targets. Windows is a *work-in-progress* — see [Windows status](#windows-status) below.
+Linux, macOS, and Windows are supported runtime targets.
 
 ## Windows status
 
-The Rust port now builds on Windows hosts (tracked in [#6](https://github.com/kvncrw/claude-mem-rs/issues/6)). The first compatibility pass covers:
+The Rust port builds and installs on Windows hosts (tracked in [#6](https://github.com/kvncrw/claude-mem-rs/issues/6)). Windows support covers:
 
 - Platform-aware path resolution (`USERPROFILE` / `HOMEDRIVE`+`HOMEPATH` / `APPDATA`) via `claude_mem_core::shared::platform_paths`, honouring `CLAUDE_MEM_HOME` and `CLAUDE_MEM_DATA_DIR` first.
 - `is_process_alive` / `force_kill_process` / `send_signal` shells out to `tasklist` and `taskkill` instead of `kill(pid, 0)` and `SIGTERM`/`SIGKILL`.
 - Daemon spawn uses `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` creation flags instead of `setsid`.
 - `bun` detection accepts `bun.exe` and `bun.cmd`; daemon-arg detection strips `.exe`/`.EXE` so `claude-mem.exe` is recognised as the multiplexed CLI.
 - `command_exists` uses `where` on Windows and `sh -c command -v` on Unix.
+- `claude-mem install` writes `.cmd` launchers, configures IDE integrations, writes transcript watcher config, and registers ONLOGON Scheduled Tasks for the worker and transcript watcher.
 
-Still limited:
+Known platform differences:
 
-- No `windows-latest` row in CI yet; Linux tests cover the cross-platform helpers but Windows-specific arms still need a runner to exercise the live `tasklist`/`taskkill`/`creation_flags` and Scheduled Task code.
+- CI runs on `windows-latest`, `macos-latest`, and `ubuntu-latest`; live OS service managers are still guarded in tests by redirected service paths.
 - Transcript watcher globs are not exercised against Windows path separators.
 - Process registry's `taskkill` mapping does not differentiate `Term` from a hard kill the way Unix signals do.
-
-Windows install now writes `.cmd` launchers and Scheduled Task wrapper scripts, but treat it as beta until a Windows CI row exercises the full install/uninstall path.
 
 ## Status
 
@@ -60,7 +59,7 @@ The Rust port covers the storage, search, hook-normalization, and HTTP/MCP surfa
 - browser viewer shell with live SSE events for session, observation, summary, queue, and manual-memory lifecycle changes
 - Claude Stop/summarize transcript JSONL extraction for summary generation, with system-reminder stripping and completion cleanup
 - rich built-in Next.js browser dashboard for feed/search/timeline/context/admin/queue/logs/settings workflows
-- POSIX installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, Codex transcript integration, and opencode MCP/plugin integration
+- Cross-platform installer/uninstaller CLI for Claude Code, Cursor, Gemini CLI, Codex transcript integration, opencode MCP/plugin integration, and persistent worker/transcript watcher services
 - generic JSONL transcript watcher daemon with v12-compatible schema config, offset state, tool pairing, summaries, and AGENTS context updates
 - folder `CLAUDE.md` memory-context generation and cleanup
 - MCP smart file search/outline/unfold helpers backed by the local filesystem
@@ -100,6 +99,12 @@ target/debug/claude-mem install --yes --bin "$(pwd)/target/debug/claude-mem"
 ```
 
 The installer creates a stable `claude-mem` command, configures detected IDEs, writes the Codex transcript watcher config, and installs background runners for the current OS.
+
+Use `--ide <ids>` to narrow the integrations, for example:
+
+```bash
+claude-mem install --yes --ide claude-code,codex-cli
+```
 
 Linux:
 

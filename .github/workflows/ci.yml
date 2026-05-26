@@ -33,13 +33,5 @@ jobs:
       - name: cargo build
         run: cargo build --workspace
 
-      # The supervisor `tests/installer_transcripts.rs` integration tests
-      # (`installer_writes_posix_runtime_integration_files` and
-      # `transcript_watcher_processes_codex_jsonl_into_memory`) leak the
-      # `CLAUDE_MEM_HOME` env var between parallel processes. This is
-      # pre-existing behaviour on `main` (see PR #7), not something this
-      # workflow introduces. Skip both tests by name so the rest of the
-      # workspace gates green; remove these `--skip` flags once the env-leak
-      # is fixed.
       - name: cargo test
-        run: cargo test --workspace -- --skip installer_writes_posix_runtime_integration_files --skip transcript_watcher_processes_codex_jsonl_into_memory
+        run: cargo test --workspace

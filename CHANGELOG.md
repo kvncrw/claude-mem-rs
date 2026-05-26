@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Persistent installer services** — `claude-mem install` now writes a stable
+  `claude-mem` launcher, configures persistent worker + Codex transcript
+  watcher services, and covers Linux systemd user units, macOS LaunchAgents,
+  and Windows ONLOGON Scheduled Tasks. The docs now describe all three install
+  paths and the service-management escape hatches.
+
 - **Corpus / knowledge-agent subsystem** — ports the TypeScript v12 corpus
   surface to Rust. ([#1](https://github.com/kvncrw/claude-mem-rs/issues/1))
   - `CorpusFile` / `CorpusFilter` / `CorpusStats` / `CorpusObservation`
@@ -59,3 +65,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Stale Gemini `Stop` hook removal, opencode plugin event names, dedupe on
   rerun, and preservation of user-customized config keys are all covered.
   ([#2](https://github.com/kvncrw/claude-mem-rs/issues/2))
+- Installer service rendering is covered by supervisor tests, and fixture tests
+  redirect Linux systemd, macOS LaunchAgent, and Windows Scheduled Task outputs
+  so install tests can run without mutating the host service manager.
