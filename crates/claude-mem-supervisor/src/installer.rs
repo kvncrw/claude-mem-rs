@@ -58,13 +58,17 @@ pub fn run_install(options: InstallOptions) -> Result<InstallReport> {
     let mut actions = Vec::new();
     let mut failed = Vec::new();
 
-    register_claude_plugin(&version, &bin_path, options.dry_run, &mut actions)?;
+    let cli_path = install_cli_launcher(&bin_path, options.dry_run, &mut actions)?;
+    register_claude_plugin(&version, &cli_path, options.dry_run, &mut actions)?;
     for ide in &selected_ides {
-        if let Err(error) = install_ide(ide, &bin_path, options.dry_run, &mut actions) {
+        if let Err(error) = install_ide(ide, &cli_path, options.dry_run, &mut actions) {
             failed.push(format!("{ide}: {error}"));
         }
     }
     write_transcript_sample_if_needed(options.dry_run, &mut actions)?;
+    if let Err(error) = install_background_services(&cli_path, options.dry_run, &mut actions) {
+        failed.push(format!("services: {error}"));
+    }
 
     Ok(InstallReport {
         version,
@@ -85,6 +89,7 @@ pub fn run_uninstall(options: UninstallOptions) -> Result<InstallReport> {
     remove_file_if_exists(cursor_mcp_path(), options.dry_run, &mut actions)?;
     remove_file_if_exists(codex_agents_path(), options.dry_run, &mut actions)?;
     remove_file_if_exists(opencode_plugin_path(), options.dry_run, &mut actions)?;
+    remove_background_services(options.dry_run, &mut actions)?;
     Ok(InstallReport {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         selected_ides: Vec::new(),
@@ -171,6 +176,76 @@ fn install_ide(ide: &str, bin_path: &Path, dry_run: bool, actions: &mut Vec<Stri
         other => return Err(anyhow!("unsupported IDE: {other}")),
     }
     Ok(())
+}
+
+fn install_cli_launcher(
+    bin_path: &Path,
+    dry_run: bool,
+    actions: &mut Vec<String>,
+) -> Result<PathBuf> {
+    let cli_path = stable_cli_path(bin_path);
+    if cli_path == bin_path {
+        actions.push(format!("using CLI binary {}", cli_path.display()));
+        return Ok(cli_path);
+    }
+
+    if !dry_run {
+        if let Some(parent) = cli_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        match fs::symlink_metadata(&cli_path) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(anyhow!(
+                    "cannot install CLI launcher over directory {}",
+                    cli_path.display()
+                ));
+            }
+            Ok(_) => {
+                fs::remove_file(&cli_path)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect CLI launcher {}", cli_path.display())
+                })
+            }
+        }
+        fs::write(&cli_path, plugin_launcher_contents(bin_path))?;
+        set_executable(&cli_path)?;
+    }
+    actions.push(format!(
+        "installed compatibility CLI launcher {} -> {}",
+        cli_path.display(),
+        bin_path.display()
+    ));
+    Ok(cli_path)
+}
+
+fn stable_cli_path(bin_path: &Path) -> PathBuf {
+    let file_name = bin_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if matches!(
+        file_name,
+        "claude-mem" | "claude-mem.exe" | "claude-mem.cmd"
+    ) && bin_path.parent().is_some_and(is_stable_cli_dir)
+    {
+        return bin_path.to_path_buf();
+    }
+
+    #[cfg(windows)]
+    let launcher = "claude-mem.cmd";
+    #[cfg(not(windows))]
+    let launcher = "claude-mem";
+
+    home_dir().join(".local").join("bin").join(launcher)
+}
+
+fn is_stable_cli_dir(path: &Path) -> bool {
+    path == Path::new("/usr/local/bin")
+        || path == Path::new("/usr/bin")
+        || path.ends_with(Path::new(".local/bin"))
 }
 
 fn select_ides(requested: Option<&str>, yes: bool) -> Result<Vec<String>> {
@@ -646,6 +721,476 @@ fn write_transcript_sample_if_needed(dry_run: bool, actions: &mut Vec<String>) -
     Ok(())
 }
 
+fn install_background_services(
+    cli_path: &Path,
+    dry_run: bool,
+    actions: &mut Vec<String>,
+) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_systemd_user_services(cli_path, dry_run, actions);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return install_launch_agents(cli_path, dry_run, actions);
+    }
+    #[cfg(windows)]
+    {
+        return install_windows_tasks(cli_path, dry_run, actions);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = (cli_path, dry_run);
+        actions.push("background services are not managed on this platform".to_owned());
+        Ok(())
+    }
+}
+
+fn remove_background_services(dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        return remove_systemd_user_services(dry_run, actions);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return remove_launch_agents(dry_run, actions);
+    }
+    #[cfg(windows)]
+    {
+        return remove_windows_tasks(dry_run, actions);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = dry_run;
+        actions.push("background services are not managed on this platform".to_owned());
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn install_systemd_user_services(
+    cli_path: &Path,
+    dry_run: bool,
+    actions: &mut Vec<String>,
+) -> Result<()> {
+    let dir = systemd_user_dir();
+    let worker_path = dir.join("claude-mem-worker.service");
+    let watch_path = dir.join("claude-mem-transcript-watch.service");
+    if !dry_run {
+        fs::create_dir_all(&dir)?;
+        fs::write(&worker_path, systemd_worker_service(cli_path))?;
+        fs::write(&watch_path, systemd_transcript_watch_service(cli_path))?;
+        if should_activate_services() && systemd_user_dir_override().is_none() {
+            run_command(
+                Command::new("systemctl").args(["--user", "daemon-reload"]),
+                "reload systemd user units",
+            )?;
+            run_command(
+                Command::new("systemctl").args([
+                    "--user",
+                    "enable",
+                    "--now",
+                    "claude-mem-worker.service",
+                    "claude-mem-transcript-watch.service",
+                ]),
+                "enable claude-mem user services",
+            )?;
+        }
+    }
+    actions.push(format!(
+        "installed Linux user services {}, {}",
+        worker_path.display(),
+        watch_path.display()
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_systemd_user_services(dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    if !dry_run && should_activate_services() && systemd_user_dir_override().is_none() {
+        let _ = Command::new("systemctl")
+            .args([
+                "--user",
+                "disable",
+                "--now",
+                "claude-mem-worker.service",
+                "claude-mem-transcript-watch.service",
+            ])
+            .status();
+    }
+    remove_file_if_exists(
+        systemd_user_dir().join("claude-mem-worker.service"),
+        dry_run,
+        actions,
+    )?;
+    remove_file_if_exists(
+        systemd_user_dir().join("claude-mem-transcript-watch.service"),
+        dry_run,
+        actions,
+    )?;
+    if !dry_run && should_activate_services() && systemd_user_dir_override().is_none() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_user_dir() -> PathBuf {
+    systemd_user_dir_override()
+        .unwrap_or_else(|| home_dir().join(".config").join("systemd").join("user"))
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_user_dir_override() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_MEM_SYSTEMD_USER_DIR").map(PathBuf::from)
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_worker_service(cli_path: &Path) -> String {
+    format!(
+        "[Unit]\n\
+Description=Claude-mem persistent memory worker\n\
+After=network.target\n\
+\n\
+[Service]\n\
+Type=simple\n\
+ExecStart={} worker --daemon\n\
+WorkingDirectory={}\n\
+Environment=CLAUDE_MEM_HOME={}\n\
+Environment=CLAUDE_MEM_WORKER_PORT=37777\n\
+Environment=CLAUDE_MEM_WORKER_URL=http://127.0.0.1:37777\n\
+Restart=on-failure\n\
+RestartSec=10\n\
+RestartSteps=5\n\
+RestartMaxDelaySec=300\n\
+Nice=10\n\
+MemoryMax=1G\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n",
+        systemd_exec_path(cli_path),
+        systemd_exec_path(&home_dir()),
+        claude_mem_home_string()
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_transcript_watch_service(cli_path: &Path) -> String {
+    format!(
+        "[Unit]\n\
+Description=Claude-mem Codex transcript watcher\n\
+After=claude-mem-worker.service\n\
+Wants=claude-mem-worker.service\n\
+\n\
+[Service]\n\
+Type=simple\n\
+ExecStart={} transcript watch\n\
+WorkingDirectory={}\n\
+Environment=CLAUDE_MEM_HOME={}\n\
+Environment=CLAUDE_MEM_WORKER_URL=http://127.0.0.1:37777\n\
+Restart=on-failure\n\
+RestartSec=10\n\
+Nice=10\n\
+MemoryMax=512M\n\
+\n\
+[Install]\n\
+WantedBy=default.target\n",
+        systemd_exec_path(cli_path),
+        systemd_exec_path(&home_dir()),
+        claude_mem_home_string()
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_exec_path(path: &Path) -> String {
+    let value = path.display().to_string();
+    if value.contains(char::is_whitespace) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_launch_agents(cli_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    let dir = launch_agents_dir();
+    let worker_path = dir.join("ai.claude-mem.worker.plist");
+    let watch_path = dir.join("ai.claude-mem.transcript-watch.plist");
+    if !dry_run {
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            &worker_path,
+            launch_agent_plist("ai.claude-mem.worker", cli_path, &["worker", "--daemon"]),
+        )?;
+        fs::write(
+            &watch_path,
+            launch_agent_plist(
+                "ai.claude-mem.transcript-watch",
+                cli_path,
+                &["transcript", "watch"],
+            ),
+        )?;
+        if should_activate_services() && launch_agents_dir_override().is_none() {
+            bootstrap_launch_agent(&worker_path, "ai.claude-mem.worker")?;
+            bootstrap_launch_agent(&watch_path, "ai.claude-mem.transcript-watch")?;
+        }
+    }
+    actions.push(format!(
+        "installed macOS LaunchAgents {}, {}",
+        worker_path.display(),
+        watch_path.display()
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn remove_launch_agents(dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    if !dry_run && should_activate_services() && launch_agents_dir_override().is_none() {
+        let domain = launchctl_domain();
+        let _ = Command::new("launchctl")
+            .args(["bootout", &domain, "ai.claude-mem.worker"])
+            .status();
+        let _ = Command::new("launchctl")
+            .args(["bootout", &domain, "ai.claude-mem.transcript-watch"])
+            .status();
+    }
+    remove_file_if_exists(
+        launch_agents_dir().join("ai.claude-mem.worker.plist"),
+        dry_run,
+        actions,
+    )?;
+    remove_file_if_exists(
+        launch_agents_dir().join("ai.claude-mem.transcript-watch.plist"),
+        dry_run,
+        actions,
+    )?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agents_dir() -> PathBuf {
+    launch_agents_dir_override().unwrap_or_else(|| home_dir().join("Library").join("LaunchAgents"))
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agents_dir_override() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_MEM_LAUNCH_AGENTS_DIR").map(PathBuf::from)
+}
+
+#[cfg(target_os = "macos")]
+fn bootstrap_launch_agent(path: &Path, label: &str) -> Result<()> {
+    let domain = launchctl_domain();
+    let path = path.display().to_string();
+    let service = format!("{domain}/{label}");
+    let _ = Command::new("launchctl")
+        .args(["bootout", &domain, label])
+        .status();
+    run_command(
+        Command::new("launchctl")
+            .arg("bootstrap")
+            .arg(&domain)
+            .arg(&path),
+        "bootstrap claude-mem LaunchAgent",
+    )?;
+    run_command(
+        Command::new("launchctl").arg("enable").arg(&service),
+        "enable claude-mem LaunchAgent",
+    )?;
+    run_command(
+        Command::new("launchctl")
+            .arg("kickstart")
+            .arg("-k")
+            .arg(&service),
+        "start claude-mem LaunchAgent",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_domain() -> String {
+    format!("gui/{}", current_uid())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_plist(label: &str, cli_path: &Path, args: &[&str]) -> String {
+    let args_xml = std::iter::once(cli_path.display().to_string())
+        .chain(args.iter().map(|arg| (*arg).to_owned()))
+        .map(|arg| format!("        <string>{}</string>\n", xml_escape(&arg)))
+        .collect::<String>();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+    <key>Label</key>\n\
+    <string>{}</string>\n\
+    <key>ProgramArguments</key>\n\
+    <array>\n{}    </array>\n\
+    <key>EnvironmentVariables</key>\n\
+    <dict>\n\
+        <key>CLAUDE_MEM_HOME</key>\n\
+        <string>{}</string>\n\
+        <key>CLAUDE_MEM_WORKER_URL</key>\n\
+        <string>http://127.0.0.1:37777</string>\n\
+    </dict>\n\
+    <key>RunAtLoad</key>\n\
+    <true/>\n\
+    <key>KeepAlive</key>\n\
+    <true/>\n\
+    <key>StandardOutPath</key>\n\
+    <string>{}</string>\n\
+    <key>StandardErrorPath</key>\n\
+    <string>{}</string>\n\
+</dict>\n\
+</plist>\n",
+        xml_escape(label),
+        args_xml,
+        xml_escape(&claude_mem_home_string()),
+        xml_escape(&claude_mem_home_string_with_file("logs/launchd.out.log")),
+        xml_escape(&claude_mem_home_string_with_file("logs/launchd.err.log"))
+    )
+}
+
+#[cfg(windows)]
+fn install_windows_tasks(cli_path: &Path, dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    let dir = windows_tasks_dir();
+    let worker_script = dir.join("claude-mem-worker.cmd");
+    let watch_script = dir.join("claude-mem-transcript-watch.cmd");
+    if !dry_run {
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            &worker_script,
+            windows_task_script(cli_path, &["worker", "--daemon"]),
+        )?;
+        fs::write(
+            &watch_script,
+            windows_task_script(cli_path, &["transcript", "watch"]),
+        )?;
+        if should_activate_services() && windows_tasks_dir_override().is_none() {
+            create_windows_task("claude-mem-worker", &worker_script)?;
+            create_windows_task("claude-mem-transcript-watch", &watch_script)?;
+        }
+    }
+    actions.push(format!(
+        "installed Windows scheduled task scripts {}, {}",
+        worker_script.display(),
+        watch_script.display()
+    ));
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_windows_tasks(dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
+    if !dry_run && should_activate_services() && windows_tasks_dir_override().is_none() {
+        let _ = Command::new("schtasks.exe")
+            .args(["/Delete", "/TN", "claude-mem-worker", "/F"])
+            .status();
+        let _ = Command::new("schtasks.exe")
+            .args(["/Delete", "/TN", "claude-mem-transcript-watch", "/F"])
+            .status();
+    }
+    remove_file_if_exists(
+        windows_tasks_dir().join("claude-mem-worker.cmd"),
+        dry_run,
+        actions,
+    )?;
+    remove_file_if_exists(
+        windows_tasks_dir().join("claude-mem-transcript-watch.cmd"),
+        dry_run,
+        actions,
+    )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_tasks_dir() -> PathBuf {
+    windows_tasks_dir_override().unwrap_or_else(|| {
+        home_dir()
+            .join("AppData")
+            .join("Roaming")
+            .join("claude-mem")
+    })
+}
+
+#[cfg(windows)]
+fn windows_tasks_dir_override() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_MEM_WINDOWS_TASKS_DIR").map(PathBuf::from)
+}
+
+#[cfg(windows)]
+fn create_windows_task(name: &str, script: &Path) -> Result<()> {
+    let command = format!("\"{}\"", script.display());
+    run_command(
+        Command::new("schtasks.exe")
+            .arg("/Create")
+            .arg("/TN")
+            .arg(name)
+            .arg("/SC")
+            .arg("ONLOGON")
+            .arg("/TR")
+            .arg(&command)
+            .arg("/F"),
+        "create claude-mem scheduled task",
+    )?;
+    let _ = Command::new("schtasks.exe")
+        .args(["/Run", "/TN", name])
+        .status();
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_task_script(cli_path: &Path, args: &[&str]) -> String {
+    let args = args.join(" ");
+    format!(
+        "@echo off\r\nset CLAUDE_MEM_HOME={}\r\nset CLAUDE_MEM_WORKER_URL=http://127.0.0.1:37777\r\n\"{}\" {}\r\n",
+        claude_mem_home_string(),
+        cli_path.display(),
+        args
+    )
+}
+
+fn should_activate_services() -> bool {
+    !matches!(
+        std::env::var("CLAUDE_MEM_INSTALL_SERVICES").ok().as_deref(),
+        Some("0" | "false" | "False" | "no" | "NO")
+    )
+}
+
+fn run_command(command: &mut Command, label: &str) -> Result<()> {
+    let status = command
+        .status()
+        .with_context(|| format!("failed to {label}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("{label} exited with status {status}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(target_os = "macos")]
+fn claude_mem_home_string_with_file(relative: &str) -> String {
+    claude_mem_core::shared::platform_paths::claude_mem_home()
+        .join(relative)
+        .display()
+        .to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn current_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
 fn remove_claude_plugin(dry_run: bool, actions: &mut Vec<String>) -> Result<()> {
     let marketplace = claude_marketplace_dir();
     if !dry_run {
@@ -972,6 +1517,38 @@ mod tests {
         );
         assert!(contents.contains("exec \"/usr/local/bin/claude-mem\" \"$@\""));
         assert_eq!(plugin_launcher_filename(), "claude-mem");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_cli_path_keeps_claude_mem_name_when_already_canonical() {
+        let bin = PathBuf::from("/usr/local/bin/claude-mem");
+        assert_eq!(stable_cli_path(&bin), bin);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_cli_path_wraps_target_debug_binary() {
+        let bin = PathBuf::from("/repo/target/debug/claude-mem");
+        let stable = stable_cli_path(&bin);
+        assert!(
+            stable.ends_with(Path::new(".local/bin/claude-mem")),
+            "expected stable user launcher, got {}",
+            stable.display()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_service_units_run_worker_and_transcript_watcher() {
+        let bin = PathBuf::from("/usr/local/bin/claude-mem");
+        let worker = systemd_worker_service(&bin);
+        assert!(worker.contains("ExecStart=/usr/local/bin/claude-mem worker --daemon"));
+        assert!(worker.contains("Environment=CLAUDE_MEM_WORKER_URL=http://127.0.0.1:37777"));
+
+        let watcher = systemd_transcript_watch_service(&bin);
+        assert!(watcher.contains("After=claude-mem-worker.service"));
+        assert!(watcher.contains("ExecStart=/usr/local/bin/claude-mem transcript watch"));
     }
 
     #[cfg(windows)]

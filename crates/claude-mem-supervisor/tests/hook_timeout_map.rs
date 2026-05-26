@@ -131,6 +131,9 @@ struct IsolatedEnv {
     _temp: tempfile::TempDir,
     prior_home: Option<std::ffi::OsString>,
     prior_claude_config: Option<std::ffi::OsString>,
+    prior_systemd_user_dir: Option<std::ffi::OsString>,
+    prior_launch_agents_dir: Option<std::ffi::OsString>,
+    prior_windows_tasks_dir: Option<std::ffi::OsString>,
     #[cfg(windows)]
     prior_userprofile: Option<std::ffi::OsString>,
     #[cfg(windows)]
@@ -147,6 +150,9 @@ impl IsolatedEnv {
 
         let prior_home = std::env::var_os("HOME");
         let prior_claude_config = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let prior_systemd_user_dir = std::env::var_os("CLAUDE_MEM_SYSTEMD_USER_DIR");
+        let prior_launch_agents_dir = std::env::var_os("CLAUDE_MEM_LAUNCH_AGENTS_DIR");
+        let prior_windows_tasks_dir = std::env::var_os("CLAUDE_MEM_WINDOWS_TASKS_DIR");
         #[cfg(windows)]
         let prior_userprofile = std::env::var_os("USERPROFILE");
         #[cfg(windows)]
@@ -156,6 +162,18 @@ impl IsolatedEnv {
 
         std::env::set_var("HOME", &home_path);
         std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
+        std::env::set_var(
+            "CLAUDE_MEM_SYSTEMD_USER_DIR",
+            home_path.join(".config/systemd/user"),
+        );
+        std::env::set_var(
+            "CLAUDE_MEM_LAUNCH_AGENTS_DIR",
+            home_path.join("Library/LaunchAgents"),
+        );
+        std::env::set_var(
+            "CLAUDE_MEM_WINDOWS_TASKS_DIR",
+            home_path.join("AppData/Roaming/claude-mem"),
+        );
         #[cfg(windows)]
         {
             std::env::set_var("USERPROFILE", &home_path);
@@ -167,6 +185,9 @@ impl IsolatedEnv {
             _temp: temp,
             prior_home,
             prior_claude_config,
+            prior_systemd_user_dir,
+            prior_launch_agents_dir,
+            prior_windows_tasks_dir,
             #[cfg(windows)]
             prior_userprofile,
             #[cfg(windows)]
@@ -182,6 +203,18 @@ impl Drop for IsolatedEnv {
     fn drop(&mut self) {
         restore("HOME", self.prior_home.take());
         restore("CLAUDE_CONFIG_DIR", self.prior_claude_config.take());
+        restore(
+            "CLAUDE_MEM_SYSTEMD_USER_DIR",
+            self.prior_systemd_user_dir.take(),
+        );
+        restore(
+            "CLAUDE_MEM_LAUNCH_AGENTS_DIR",
+            self.prior_launch_agents_dir.take(),
+        );
+        restore(
+            "CLAUDE_MEM_WINDOWS_TASKS_DIR",
+            self.prior_windows_tasks_dir.take(),
+        );
         #[cfg(windows)]
         {
             restore("USERPROFILE", self.prior_userprofile.take());

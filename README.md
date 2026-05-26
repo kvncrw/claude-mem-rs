@@ -24,14 +24,13 @@ The Rust port now builds on Windows hosts (tracked in [#6](https://github.com/kv
 - `bun` detection accepts `bun.exe` and `bun.cmd`; daemon-arg detection strips `.exe`/`.EXE` so `claude-mem.exe` is recognised as the multiplexed CLI.
 - `command_exists` uses `where` on Windows and `sh -c command -v` on Unix.
 
-Not yet wired (intentional follow-ups):
+Still limited:
 
-- `claude-mem install` / `uninstall` still bail on Windows. The IDE integrations emit POSIX `sh` launchers (e.g. `#!/usr/bin/env sh` for the plugin shim) and hard-code `~/.claude/...` style layouts. A Windows install path needs PowerShell/`cmd` launchers, `%APPDATA%` config locations, and `bun.cmd` shim handling.
-- No `windows-latest` row in CI yet; Linux tests cover the cross-platform helpers but Windows-specific arms still need a runner to exercise the live `tasklist`/`taskkill`/`creation_flags` code.
+- No `windows-latest` row in CI yet; Linux tests cover the cross-platform helpers but Windows-specific arms still need a runner to exercise the live `tasklist`/`taskkill`/`creation_flags` and Scheduled Task code.
 - Transcript watcher globs are not exercised against Windows path separators.
 - Process registry's `taskkill` mapping does not differentiate `Term` from a hard kill the way Unix signals do.
 
-If you are running the worker or MCP server directly (`cargo run -p claude-mem-worker`, `cargo run -p claude-mem-mcp`) on Windows, the binaries should function. The unified `claude-mem` installer should be skipped.
+Windows install now writes `.cmd` launchers and Scheduled Task wrapper scripts, but treat it as beta until a Windows CI row exercises the full install/uninstall path.
 
 ## Status
 
@@ -90,6 +89,39 @@ Optional live provider smoke coverage is gated because it calls real CLIs/APIs:
 CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1 cargo test -p claude-mem-worker --test live_provider_smoke -- --nocapture
 CLAUDE_MEM_LIVE_PROVIDER_SMOKE=1 CLAUDE_MEM_LIVE_OPENROUTER_SMOKE=1 cargo test -p claude-mem-worker --test live_provider_smoke -- --nocapture
 ```
+
+## Install
+
+Build the unified CLI, then install the integrations:
+
+```bash
+cargo build -p claude-mem-supervisor --bin claude-mem
+target/debug/claude-mem install --yes --bin "$(pwd)/target/debug/claude-mem"
+```
+
+The installer creates a stable `claude-mem` command, configures detected IDEs, writes the Codex transcript watcher config, and installs background runners for the current OS.
+
+Linux:
+
+- Writes `~/.config/systemd/user/claude-mem-worker.service`
+- Writes `~/.config/systemd/user/claude-mem-transcript-watch.service`
+- Runs `systemctl --user daemon-reload`
+- Runs `systemctl --user enable --now claude-mem-worker.service claude-mem-transcript-watch.service`
+
+macOS:
+
+- Writes `~/Library/LaunchAgents/ai.claude-mem.worker.plist`
+- Writes `~/Library/LaunchAgents/ai.claude-mem.transcript-watch.plist`
+- Bootstraps/enables/kickstarts both LaunchAgents with `launchctl`
+
+Windows:
+
+- Writes `%USERPROFILE%\.local\bin\claude-mem.cmd`
+- Writes `%APPDATA%\claude-mem\claude-mem-worker.cmd`
+- Writes `%APPDATA%\claude-mem\claude-mem-transcript-watch.cmd`
+- Registers `claude-mem-worker` and `claude-mem-transcript-watch` ONLOGON Scheduled Tasks with `schtasks.exe`
+
+Set `CLAUDE_MEM_INSTALL_SERVICES=0` to write config files without enabling or starting background services. Tests and package managers can also redirect service files with `CLAUDE_MEM_SYSTEMD_USER_DIR`, `CLAUDE_MEM_LAUNCH_AGENTS_DIR`, and `CLAUDE_MEM_WINDOWS_TASKS_DIR`.
 
 ## Runtime Layout
 

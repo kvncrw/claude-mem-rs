@@ -43,6 +43,7 @@ fn installer_writes_posix_runtime_integration_files() {
         .path()
         .join(".config/opencode/claude-mem-rs-plugin.mjs");
     let transcript_config = home.path().join(".claude-mem/transcript-watch.json");
+    let systemd_user_dir = home.path().join(".config/systemd/user");
     std::env::set_var("HOME", home.path());
     std::env::set_var("CLAUDE_CONFIG_DIR", &claude_dir);
     std::env::set_var("CURSOR_MCP_CONFIG", &cursor_mcp);
@@ -51,6 +52,15 @@ fn installer_writes_posix_runtime_integration_files() {
     std::env::set_var("OPENCODE_CONFIG_PATH", &opencode_config);
     std::env::set_var("OPENCODE_PLUGIN_PATH", &opencode_plugin);
     std::env::set_var("CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH", &transcript_config);
+    std::env::set_var("CLAUDE_MEM_SYSTEMD_USER_DIR", &systemd_user_dir);
+    std::env::set_var(
+        "CLAUDE_MEM_LAUNCH_AGENTS_DIR",
+        home.path().join("Library/LaunchAgents"),
+    );
+    std::env::set_var(
+        "CLAUDE_MEM_WINDOWS_TASKS_DIR",
+        home.path().join("AppData/Roaming/claude-mem"),
+    );
     std::fs::create_dir_all(gemini_settings.parent().unwrap()).unwrap();
     std::fs::write(
         &gemini_settings,
@@ -79,6 +89,10 @@ fn installer_writes_posix_runtime_integration_files() {
     assert!(opencode_config.exists());
     assert!(opencode_plugin.exists());
     assert!(transcript_config.exists());
+    assert!(systemd_user_dir.join("claude-mem-worker.service").exists());
+    assert!(systemd_user_dir
+        .join("claude-mem-transcript-watch.service")
+        .exists());
 
     let cursor: Value =
         serde_json::from_str(&std::fs::read_to_string(cursor_mcp).unwrap()).unwrap();

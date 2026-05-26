@@ -37,6 +37,18 @@ fn isolate_env(home: &std::path::Path) {
         "CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH",
         home.join(".claude-mem/transcript-watch.json"),
     );
+    std::env::set_var(
+        "CLAUDE_MEM_SYSTEMD_USER_DIR",
+        home.join(".config/systemd/user"),
+    );
+    std::env::set_var(
+        "CLAUDE_MEM_LAUNCH_AGENTS_DIR",
+        home.join("Library/LaunchAgents"),
+    );
+    std::env::set_var(
+        "CLAUDE_MEM_WINDOWS_TASKS_DIR",
+        home.join("AppData/Roaming/claude-mem"),
+    );
     std::env::remove_var("CLAUDE_MEM_HOME");
     std::env::remove_var("CLAUDE_MEM_DATA_DIR");
     std::env::remove_var("CLAUDE_MEM_WORKER_URL");
